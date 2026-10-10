@@ -100,10 +100,13 @@ def create_app(settings=None,engine=None):
             admin_email=os.environ.get('BOOTSTRAP_ADMIN_EMAIL','admin@demo.edu' if settings.environment=='test' else '').strip().lower()
             domain=os.environ.get('BOOTSTRAP_COLLEGE_DOMAIN',email_domain(admin_email)).strip().lower()
             if c.execute(select(func.count()).select_from(colleges)).scalar_one()==0:
-                if not college_name or not admin_email or not domain or not permitted_domain(admin_email,domain) or len(settings.admin_password)<12:
-                    raise RuntimeError('Set BOOTSTRAP_COLLEGE_NAME, BOOTSTRAP_COLLEGE_DOMAIN, BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD (12+ characters).')
-                cid=uid();c.execute(insert(colleges).values(id=cid,name=college_name,domain=domain,created_at=now()))
-                c.execute(insert(accounts).values(id=uid(),college_id=cid,email=admin_email,full_name='College Administrator',password_hash=passwords.hash(settings.admin_password),role='admin',departments=[],student_id=None,active=True))
+                if not college_name and not admin_email and os.environ.get('REGISTRATION_INVITE_CODE'):
+                    pass  # First college will register with a server-configured invite code.
+                else:
+                    if not college_name or not admin_email or not domain or not permitted_domain(admin_email,domain) or len(settings.admin_password)<12:
+                        raise RuntimeError('Set BOOTSTRAP_COLLEGE_NAME, BOOTSTRAP_COLLEGE_DOMAIN, BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD (12+ characters), or REGISTRATION_INVITE_CODE for fresh onboarding.')
+                    cid=uid();c.execute(insert(colleges).values(id=cid,name=college_name,domain=domain,created_at=now()))
+                    c.execute(insert(accounts).values(id=uid(),college_id=cid,email=admin_email,full_name='College Administrator',password_hash=passwords.hash(settings.admin_password),role='admin',departments=[],student_id=None,active=True))
         if os.environ.get('IMPORT_LEGACY_V2','false').lower()=='true':
             from sqlalchemy import inspect
             if inspect(engine).has_table('students'):
@@ -144,6 +147,10 @@ def create_app(settings=None,engine=None):
         openapi_url='/api/openapi.json' if settings.environment=='test' or os.environ.get('ENABLE_API_DOCS')=='true' else None,
         redoc_url=None)
     app.state.engine=engine;app.state.settings=settings
+    from .college_setup import install_college_routes
+    from .learning import install_learning_routes
+    install_college_routes(app,engine,settings)
+    install_learning_routes(app,engine)
 
     @app.middleware('http')
     async def security(request,call_next):
@@ -272,57 +279,98 @@ def create_app(settings=None,engine=None):
             audit(c,user,'account.toggled',{'account_id':account_id,'active':not target['active']})
         return {'active':not target['active']}
 
-    @app.post('/api/admin/import-supabase')
-    def import_supabase(body:SupabaseImportData,user=Depends(identity)):
-        """Import existing public.students/faculty into the PULSEIQ tables, idempotently.
-        Accounts are optional and only created with an explicitly supplied password.
-        """
+    def _supabase_source(c, college):
+        """Find the authorized source college by its configured domain; never guess a tenant."""
+        from sqlalchemy import inspect
+        if not {'students', 'faculty', 'colleges'}.issubset(
+            set(inspect(c).get_table_names(schema='public'))
+        ):
+            raise HTTPException(400, 'Source tables public.colleges, public.students and public.faculty are missing.')
+        rows=c.execute(text("""
+            SELECT id, college_code, college_name, email_domain
+            FROM public.colleges
+            WHERE lower(trim(email_domain)) = :domain
+        """), {'domain':college['domain'].strip().lower()}).mappings().all()
+        if len(rows)!=1:
+            raise HTTPException(400,
+                'College domain mismatch: PULSEIQ uses '+college['domain']+
+                '. Update public.colleges.email_domain to this value before importing.')
+        return rows[0]
+
+    @app.get('/api/admin/import-supabase/status')
+    def import_supabase_status(user=Depends(identity)):
+        """Read-only diagnostics for admin; no passwords or arbitrary college records."""
         roles(user,'admin')
         from sqlalchemy import inspect
-        inspector=inspect(engine)
-        available=set(inspector.get_table_names(schema='public'))
-        if not {'students','faculty','colleges'}.issubset(available):
-            raise HTTPException(400,'Missing public.students, public.faculty or public.colleges. Create demo tables first.')
+        with engine.connect() as c:
+            college=c.execute(select(colleges).where(colleges.c.id==user['college_id'])).mappings().one()
+            tables=set(inspect(c).get_table_names(schema='public'))
+            result={'application_domain':college['domain'],
+                    'tables_present':all(x in tables for x in ('colleges','students','faculty')),
+                    'matching_source':False,
+                    'source_students':0,'source_faculty':0,
+                    'roster_students':c.execute(select(func.count()).select_from(roster).where(roster.c.college_id==user['college_id'])).scalar_one(),
+                    'student_accounts':c.execute(select(func.count()).select_from(accounts).where(accounts.c.college_id==user['college_id'],accounts.c.role=='student')).scalar_one(),
+                    'faculty_accounts':c.execute(select(func.count()).select_from(accounts).where(accounts.c.college_id==user['college_id'],accounts.c.role=='faculty')).scalar_one(),
+                    'faculty_assignments':c.execute(select(func.count()).select_from(subjects).where(subjects.c.college_id==user['college_id'])).scalar_one()}
+            if result['tables_present']:
+                matched=c.execute(text("""SELECT id FROM public.colleges WHERE lower(trim(email_domain))=:domain"""),
+                    {'domain':college['domain'].lower().strip()}).scalars().all()
+                if len(matched)==1:
+                    result['matching_source']=True
+                    result['source_students']=c.execute(text('SELECT count(*) FROM public.students WHERE college_id=:id'),{'id':matched[0]}).scalar_one()
+                    result['source_faculty']=c.execute(text('SELECT count(*) FROM public.faculty WHERE college_id=:id'),{'id':matched[0]}).scalar_one()
+        return result
+
+    @app.post('/api/admin/import-supabase')
+    def import_supabase(body:SupabaseImportData,user=Depends(identity)):
+        """Idempotent import of a source college into tenant-scoped roster and accounts.
+
+        A student/faculty email need not use the institute domain: demo data may
+        have an older mail domain. The SOURCE college must match, and accounts
+        never cross tenant boundaries or overwrite existing passwords.
+        """
+        roles(user,'admin')
         stats={'students_created':0,'students_updated':0,'faculty_accounts_created':0,
                'student_accounts_created':0,'assignments_created':0,'skipped_faculty':0,
                'skipped_student_accounts':0}
         with engine.begin() as c:
             college=c.execute(select(colleges).where(colleges.c.id==user['college_id'])).mappings().one()
-            sources=c.execute(text('SELECT id, email_domain FROM public.colleges WHERE lower(email_domain)=:domain'),{'domain':college['domain']}).mappings().all()
-            if len(sources)!=1:
-                raise HTTPException(400,'Demo college domain does not match the PULSEIQ college domain. Check BOOTSTRAP_COLLEGE_DOMAIN and public.colleges.email_domain.')
-            source_id=sources[0]['id']
-            students=c.execute(text('SELECT roll_number, full_name, email, department, semester, section FROM public.students WHERE college_id=:cid ORDER BY roll_number'),{'cid':source_id}).mappings().all()
-            faculty=c.execute(text('SELECT * FROM public.faculty WHERE college_id=:cid ORDER BY employee_id'),{'cid':source_id}).mappings().all()
+            source=_supabase_source(c,college)
+            students=c.execute(text('SELECT roll_number, full_name, email, department, semester, section FROM public.students WHERE college_id=:cid ORDER BY roll_number'),{'cid':source['id']}).mappings().all()
+            faculty=c.execute(text('SELECT * FROM public.faculty WHERE college_id=:cid ORDER BY employee_id'),{'cid':source['id']}).mappings().all()
             known={r['student_id']:r['id'] for r in c.execute(select(roster.c.student_id,roster.c.id).where(roster.c.college_id==college['id'])).mappings()}
-            existing_emails={r['email']:r for r in c.execute(select(accounts).where(accounts.c.college_id==college['id'])).mappings()}
-            linked={r['student_id'] for r in existing_emails.values() if r['role']=='student' and r['student_id']}
+            # Globally unique email constraint: never insert an address owned by another campus.
+            all_accounts={r['email'].lower():dict(r) for r in c.execute(select(accounts)).mappings()}
+            linked={r['student_id'] for r in all_accounts.values() if r['college_id']==college['id'] and r['role']=='student' and r['student_id']}
             fp_hash=passwords.hash(body.faculty_password) if body.faculty_password else None
             sp_hash=passwords.hash(body.student_password) if body.student_password else None
             for item in students:
                 sid=str(item['roll_number']).strip()
+                if not sid:raise HTTPException(400,'A source student has a blank roll_number.')
                 values=dict(full_name=str(item['full_name'])[:150],email=str(item['email']).strip().lower() if item['email'] else None,
                     department=str(item['department'] or 'Unassigned')[:100],semester=int(item['semester'] or 1),section=str(item['section'] or 'A')[:50],active=True)
                 if sid in known:
-                    c.execute(update(roster).where(roster.c.id==known[sid]).values(**values));stats['students_updated']+=1
+                    c.execute(update(roster).where(roster.c.id==known[sid],roster.c.college_id==college['id']).values(**values));stats['students_updated']+=1
                 else:
-                    c.execute(insert(roster).values(id=uid(),college_id=college['id'],student_id=sid,**values));stats['students_created']+=1
+                    rid=uid();c.execute(insert(roster).values(id=rid,college_id=college['id'],student_id=sid,**values));known[sid]=rid;stats['students_created']+=1
                 email=values['email']
-                if sp_hash and email and permitted_domain(email,college['domain']) and email not in existing_emails and sid not in linked:
+                # Valid source-row membership is the authorization, not email suffix.
+                if sp_hash and email and EMAIL_RE.fullmatch(email) and email not in all_accounts and sid not in linked:
                     record=dict(id=uid(),college_id=college['id'],email=email,full_name=values['full_name'],password_hash=sp_hash,role='student',departments=[],student_id=sid,active=True)
-                    c.execute(insert(accounts).values(**record));existing_emails[email]=record;linked.add(sid);stats['student_accounts_created']+=1
+                    c.execute(insert(accounts).values(**record));all_accounts[email]=record;linked.add(sid);stats['student_accounts_created']+=1
                 elif sp_hash and sid not in linked:stats['skipped_student_accounts']+=1
             for item in faculty:
                 email=str(item['email'] or '').strip().lower()
-                if not email or not permitted_domain(email,college['domain']):
+                if not email or not EMAIL_RE.fullmatch(email):
                     stats['skipped_faculty']+=1;continue
                 department=str(item['department'] or 'Unassigned')[:100]
-                existing=existing_emails.get(email)
-                if existing and existing['role']!='faculty':
+                existing=all_accounts.get(email)
+                if existing and (existing['college_id']!=college['id'] or existing['role']!='faculty'):
                     stats['skipped_faculty']+=1;continue
                 if not existing and fp_hash:
                     record=dict(id=uid(),college_id=college['id'],email=email,full_name=str(item['full_name'])[:150],password_hash=fp_hash,role='faculty',departments=[department],student_id=None,active=True)
-                    c.execute(insert(accounts).values(**record));existing_emails[email]=record;existing=record;stats['faculty_accounts_created']+=1
+                    c.execute(insert(accounts).values(**record));all_accounts[email]=record;existing=record;stats['faculty_accounts_created']+=1
                 if not existing:stats['skipped_faculty']+=1;continue
                 subject=str(item.get('subject_name') or item.get('subject_code') or '').strip()
                 semester=item.get('assigned_semester');section=item.get('assigned_section')

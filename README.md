@@ -1,111 +1,100 @@
-# PULSEIQ 3.0 — Multi-College Student Success Platform
+# PULSEIQ Aurora — React + FastAPI + Supabase
 
-A single deployable **React + FastAPI + Neon PostgreSQL** application with three server-authorized portals: **College Admin**, **Faculty**, and **Student**. This project is rebuilt from the supplied PULSEIQ v2 ZIP; its explainable scoring engine and demo data generator remain in `backend/scoring.py` and `backend/seed.py`.
+**This is the main application codebase.** The previous `kaki.html` interface is kept only under `design/` for reference; the running UI is React. UI inspiration: the approved blue/teal/purple PULSEIQ concept slides, redesigned as real components rather than static screenshots. Animated card float, halo backlight, gradient backgrounds and slow moving light-bars are implemented in CSS with reduced-motion support.
 
-## First deployment (Render + Neon)
+## Start here
 
-1. Extract the ZIP. Push the `PULSEIQ_UPGRADED` folder to a **private** GitHub repository. Do not upload `.env` or passwords.
-2. Create (or reuse) a **Neon PostgreSQL** database. Copy its *pooled* connection string, including `sslmode=require`.
-3. In Render, **New → Blueprint**, connect the GitHub repo, and choose `render.yaml`. You may instead create a Docker Web Service using the included `Dockerfile`.
-4. Set these Render environment variables:
+**Production / Render:** deploy this entire `PULSE/` directory from the repository root with the included `Dockerfile` and `render.yaml`. The Docker build compiles React, installs FastAPI/scikit-learn dependencies, and serves both under one origin. `https://your-render-service.onrender.com/health` must return `status: ok`.
 
-   | Variable | Example or purpose |
-   | --- | --- |
-   | `DATABASE_URL` | Neon pooled Postgres connection string |
-   | `APP_SECRET` | Random stable secret; Blueprint generates it |
-   | `BOOTSTRAP_ADMIN_PASSWORD` | Strong first college admin password (12+ characters) |
-   | `BOOTSTRAP_COLLEGE_NAME` | `Example Engineering College` |
-   | `BOOTSTRAP_COLLEGE_DOMAIN` | `example.edu` — verified by **you** before provisioning |
-   | `BOOTSTRAP_ADMIN_EMAIL` | `admin@example.edu` |
-   | `COOKIE_SECURE` | `true` for Render HTTPS |
-   | `SEED_DEMO` | `false` for real setup; `true` only for fictional demo students |
-   | `IMPORT_LEGACY_V2` | `false`, unless you explicitly migrate a previous v2 database snapshot |
+### Render environment (secrets live on Render only)
 
-5. Deploy. Open the Render URL and sign in with the **bootstrap college admin email** and password. First launch creates `pi3_*` tables and the first college. **Do not use `admin` as username**; v3 uses institutional email.
-6. Admin portal → **Students** to add/bulk import students (JSON) or **Data connections** to connect institution databases and map columns. Admin portal → **Faculty & access** to create faculty/student accounts, assign subjects/classes. Faculty portal → **Class records** to publish attendance and marks. Students see only their own academic records.
+| Variable | Required | Purpose |
+|---|---|---|
+| `DATABASE_URL` | Yes | Supabase PostgreSQL **Session pooler** URI copied from Supabase → Connect; include username `postgres.PROJECT_REF`, correct database password, `?sslmode=require` |
+| `APP_SECRET` | Yes | At least 32 random characters; Render can generate |
+| `BOOTSTRAP_COLLEGE_NAME` | For original demo bootstrap | Institution name (e.g. `Demo Engineering College`) |
+| `BOOTSTRAP_COLLEGE_DOMAIN` | For original demo bootstrap | Match `pi3_colleges.domain` (for example `democollege.edu.in`) |
+| `BOOTSTRAP_ADMIN_EMAIL` | For original demo bootstrap | Admin address from the same college domain |
+| `BOOTSTRAP_ADMIN_PASSWORD` | For original demo bootstrap | 12+ random characters |
+| `REGISTRATION_INVITE_CODE` | To allow additional colleges | Strong random platform invite secret supplied to authorized college registrants |
+| `COOKIE_SECURE` | In production | `true` |
+| `SEED_DEMO` | Optional | Recommended `false` |
+| `IMPORT_LEGACY_V2` | Optional | Recommended `false` |
 
-You **do not need separate Neons for separate colleges**. Each college has a distinct `college_id` and mapping/credentials. Each institution's original database remains its own system.
+You may **either** configure bootstrap admin variables to create the initial college **or**, for a completely new PostgreSQL instance, configure a registration invite code and leave all bootstrap variables unset. Do not disable `COOKIE_SECURE` on HTTPS Render deployments. Never put a database URL, an invite code, or API secrets in `frontend/`.
 
-## Redeploying over your original PULSEIQ v2 Neon database
+**Supabase database password format**: use the exact *Session pooler* connection string from Supabase, which commonly looks like `postgresql://postgres.PROJECT_REF:ENCODED_PASSWORD@aws-0-REGION.pooler.supabase.com:5432/postgres?sslmode=require`. URL-encode special characters in your password. Do not put just `db.PROJECT_REF.supabase.co` in `DATABASE_URL`.
 
-- v3 **creates new `pi3_*` tables**; v2 tables are not destroyed or overwritten. Your former v2 `admin` account does not become a v3 college login.
-- To import the legacy v2 student snapshot and interventions into your first v3 college, set `IMPORT_LEGACY_V2=true` **only on first launch while the new college roster is empty**. Then set it back to `false`. If you already seeded the new college or added students, this migration will not run.
-- Recreate users with institutional email addresses and role assignments; v2 username accounts are intentionally **not** migrated, because role/tenant permissions changed.
-- Export/backup existing Neon data first. Verify on a Neon branch before production deployment.
+### Run locally on Windows
 
-## Roles and permissions
+Install Python 3.12 and Node.js 24. In PowerShell:
 
-| Feature | College admin | Faculty | Student |
-| --- | --- | --- | --- |
-| College identity shown from email domain | Yes | Yes | Yes |
-| Add students and create users | Yes | No | No |
-| Connect, inspect, preview, map, and sync source databases | Yes | No | No |
-| Assign faculty to subject / semester / section | Yes | No | No |
-| View students | Entire own college | Own assigned classes | Own student record |
-| Enter draft/published attendance & marks | Yes, for college's assigned subjects | Own assigned subjects only | Read published entries only |
-| Review analytics and action board | College | Assigned students | Own record/action status |
-| Read another college's records | Never | Never | Never |
-
-**The email domain only identifies the college; it never assigns faculty/admin privileges.** Only an existing authorized admin can create accounts. More colleges must be provisioned from a trusted server terminal, not via open web sign-up.
-
-## Add a second college
-
-In a trusted server shell with the same `DATABASE_URL` and `APP_SECRET`, run:
-
-```bash
-python -m scripts.add_college --name "Second College" --domain secondcollege.edu --admin-email admin@secondcollege.edu
+```powershell
+# In the PULSE folder. Replace all example values privately.
+$env:DATABASE_URL = 'postgresql://postgres.PROJECT_REF:ENCODED_PASSWORD@POOLER_HOST:5432/postgres?sslmode=require'
+$env:APP_SECRET = 'REPLACE_WITH_A_RANDOM_VALUE_LONGER_THAN_32_CHARACTERS'
+$env:BOOTSTRAP_COLLEGE_NAME = 'Demo Engineering College'
+$env:BOOTSTRAP_COLLEGE_DOMAIN = 'democollege.edu.in'
+$env:BOOTSTRAP_ADMIN_EMAIL = 'admin@democollege.edu.in'
+$env:BOOTSTRAP_ADMIN_PASSWORD = 'REPLACE_WITH_PRIVATE_LONG_RANDOM_PASSWORD'
+$env:REGISTRATION_INVITE_CODE = 'REPLACE_WITH_PRIVATE_LONG_INVITE_CODE'
+$env:COOKIE_SECURE = 'false'  # localhost only
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-connectors.txt
+.\.venv\Scripts\python.exe -m uvicorn backend.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-The script prompts securely for that college's initial admin password. You must verify control of `secondcollege.edu` out of band before provisioning. The college appears automatically during login email resolution. A developer may also run the script from their local machine with Render-equivalent environment settings and database network access.
+In a **second** terminal:
 
-## Integrations
-
-Admin portal → Data connections → Add integration. Store a *read-only* source account; passwords are encrypted with a Fernet key derived from `APP_SECRET` and are never sent back to the browser. **Keep `APP_SECRET` unchanged** across redeployments or existing integration credentials cannot be decrypted.
-
-- **PostgreSQL:** `postgresql+psycopg://readonly:password@host:5432/college?sslmode=require`
-- **MySQL/MariaDB:** `mysql+pymysql://readonly:password@host:3306/college`
-- **SQL Server:** `mssql+pymssql://readonly:password@host/college` (optional connector driver)
-- **Oracle:** `oracle+oracledb://readonly:password@host:1521/?service_name=XE` (optional connector driver)
-- **MongoDB:** URI plus database name
-- **HTTPS API:** Public HTTPS URL returning arrays named `students`, `academic`, `attendance`, etc.
-
-The administrator uses **Inspect tables → Map fields → Preview mapped data → Sync**. Every college maintains separate mapping JSON, which maps canonical keys like `students.student_id` to their database columns. Example: `connectors/mapping.json` and `docs/INSTITUTION_CONNECTIONS.md`.
-
-Connections require the college's approval, correct read-only credentials, and network access. An arbitrary database cannot be auto-connected without its permission, schema details, drivers, and mapping. API URLs must be public HTTPS; local/private API hosts are blocked. Institution database writes are **not** performed; faculty updates stay in PULSEIQ and are not overwritten by re-sync.
-
-## Developer checks
-
-```bash
-pip install -r requirements.txt -r requirements-dev.txt
-pytest -q
+```powershell
 cd frontend
 npm ci
-npm run build
+npm run dev
 ```
 
-Local tests use SQLite **only** for tests; production requires Neon PostgreSQL. Docker builds React using `npm ci`, then serves it through FastAPI at the same Render URL. Old tests and documents are preserved in `tests_v2_reference/` and `docs_v2_reference/` and are **not** v3 regression tests.
+Open `http://127.0.0.1:5173`. Vite proxies `/api` to FastAPI. Or run `start_windows.bat` after setting env vars in your Command Prompt.
 
-## Verification and limitations
+## Access & workflows
 
-- The new v3 backend **was exercised with tests for logins, CSRF, permissions, data isolation between two colleges, faculty class boundaries, drafts/publishing, roster import, and intervention updates**.
-- Frontend TSX syntax transpilation was checked; a complete `npm ci`/Vite build was **not** possible in the offline file-building environment. Render's Docker build will install dependencies and perform full TypeScript/Vite compilation; monitor its build logs.
-- This is a runnable hackathon/prototype foundation, **not an audited student information system**. Before use with real student data, obtain data-sharing authorization, conduct privacy/security review, validate user provisioning and email-domain ownership, enable backups, apply proper production migrations, and consider PostgreSQL row-level security, SSO, record retention, stronger role recovery, and production observability.
-- Scoring engine is `rules_v1`, **not a trained ML model** and should not autonomously make high-stakes academic decisions. The baseline React student risk dashboard is implemented anew; not every v2 staff-screen component is present.
-- Real-time scheduled connector sync and institute-side write-back are not implemented; admins initiate source sync. Driver and network configuration varies by database vendor.
+| Portal | Live database functionality |
+|---|---|
+| New college | Secure invite-only self registration with own admin account; independent college domain, preferences, brand accent, academic calendar, departments, grading scheme, attendance target, request/risk toggles |
+| Admin | All-college roster, add/edit students, faculty/user account creation and password resets, enable/disable accounts, faculty class assignment, attendance and marks publishing, announcements, interventions, requests, timetable, analytics, ML training, source import, audit, learning assignments/tests, resources |
+| Faculty | Their own assigned classes, student roster, attendance and marks entry, assigned subject performance, student focus insights, interventions, create coursework/MCQ quizzes/resources, view submissions and manually grade written assignments |
+| Student | Only their own profile and student records, approved marks and attendance, published subject tasks, take auto-graded MCQ quizzes, submit written assignments, view grading feedback, resources/links, personalized focus areas, support requests |
 
-## Folder map
+**Critical first-run setup for the user's existing demo**: `public.students` has 250 rows and `public.faculty` has 20, but they do NOT become login accounts automatically. The existing roster may already contain 250 rows in `pi3_roster`. Go to Admin → **Supabase Import** and provide faculty/student temporary passwords (12+ characters) to populate `pi3_accounts`. The import matches the **source college's** `public.colleges.email_domain` to the **application college's** `pi3_colleges.domain`; for this instance both should be `democollege.edu.in`. Student addresses at `@demo.edu.in` can remain unchanged. No existing passwords are overwritten. Admin must verify and add teaching assignments for department, semester, section and subject before faculty can see their students.
 
-| Path | Use |
-| --- | --- |
-| `backend/api_v3.py` | v3 API, account/role authorizations, actions, sync |
-| `backend/tenant_db.py` | Multi-college schema |
-| `backend/tenant_auth.py` | Role-scoped login, sessions, CSRF |
-| `backend/tenant_data.py` | Student scope, scores, faculty overrides and sync |
-| `backend/tenant_connectors.py` | Encrypted college-specific database credentials/inspection |
-| `backend/scoring.py`, `backend/validation.py` | Existing explainable model and canonical record validation |
-| `frontend/src/main.tsx` | Three React dashboards and forms |
-| `tests/` | v3 regression tests |
-| `scripts/add_college.py` | Trusted multi-college provisioning |
-| `Dockerfile`, `render.yaml`, `.env.example` | Cloud redeployment |
-| `docs/` | Current data mapping, setup and API notes |
-| `docs_v2_reference/`, `tests_v2_reference/` | Previous iteration materials |
+Run `database/02_check_database.sql` in Supabase SQL Editor for record counts. `database/01_application_schema.sql` is an optional manual schema script; normally FastAPI creates the missing `pi3_*` tables on startup. Do **not** disable RLS to fix import visibility; FastAPI uses a direct private PostgreSQL connection. Protect the database password and do not expose `pi3_accounts` over the Supabase public Data API.
+
+## IMPORTANT: college isolation vs. separate database
+
+This release is a **single hosted Supabase PostgreSQL database with per-college `college_id` isolation** across the application's 20 `pi3_*` tables. Colleges get separate institution workspaces and private data access checks. **It does not create a physical Supabase database/project for each college.** The existing External Data Sources module supports selected college-owned data connections for importing records, but application tables still live in the shared hosted database. Real database-per-tenant provisioning would require a separate database-provisioning control plane, migration orchestration, per-tenant connection lifecycle, backups, and security review before it can be advertised. For the hackathon/demo, the secure shared tenant pattern is the supported architecture.
+
+**Self-registration is invite-only, not domain-verified:** a platform administrator controls who receives `REGISTRATION_INVITE_CODE`. Before public production registration, add email/domain ownership verification, invite expiry/rotation, moderation, rate limiting, tenant quotas, legal consent and operational monitoring. The code enforces role permissions, college ID scoping, HttpOnly session cookies, same-site CSRF, Argon2 password hashing, restricted CORS and audit logs, but those protections do not replace a security review.
+
+## 7 data categories and success score
+
+`backend/scoring.py` calculates a transparent rule-based score from **fresh observations** in these seven categories:
+
+- Academic: marks, backlog count (backlogs drive risk rules)
+- Attendance: attended / held class records
+- LMS: completed / assigned activities
+- Engagement: campus activities completed
+- Placement: aptitude, coding and interviews
+- Skills: technical and communication assessments
+- Feedback: help requested and contextual sentiment/support information, shown alongside scoring **but not currently included in weighted numerical score**
+
+**Weighted Student Success Score (6 numerical components)** from `backend/config.json`: Academic 30%, Attendance 20%, LMS 15%, Placement 25%, Skills 5%, Engagement 5%. Coverage must be at least 80% for a provisional score; absent data stays unscored. The feedback category is available as an observation and can influence contextual recommendations but is **not** part of the current score formula. The academic/placement support flags are explainable rules, not ML predictions.
+
+**Traditional ML** (`backend/traditional_ml.py`) uses scikit-learn RandomForest with 7 features: marks %, attendance %, LMS %, placement %, skills %, engagement %, and backlogs. The model needs at least 40 labeled historical observations, including both outcome classes; labels must be from an actual **later** outcome to prevent leakage. An explicit synthetic demo training option is available and is never claimed as real validation. Holdout ROC-AUC, accuracy, precision, recall and feature importances are displayed. The model artifact lives in `pi3_ml_models` by college. `GET /api/insights/focus` supplies immediate evidence-based guidance using observed gaps and institution attendance preferences; it is not causal future-boost prediction.
+
+## Testing and limitations
+
+The backend automated integration smoke flow exercised **college registration, invalid invite refusal, login, preferences, add student, add faculty/student accounts, class assignment, create quiz, student quiz completion/autograde, duplicate submission blocking, resources, explainable focus API, roles, and cross-college isolation**. Tests passed with an SQLite test engine and a local *test-only* Argon2-compatible stand-in for `pwdlib` (which was missing from the execution environment). `python -m compileall -q backend` passed and TypeScript/JSX syntax parsing passed. Synthetic RandomForest training and predictions also ran successfully.
+
+**Not verified**: a complete npm production build in this offline environment, actual Render deployment, connectivity using your private Supabase credentials, browser-click end-to-end tests, simultaneous many-college load, mobile layouts on physical devices, production domain verification and per-tenant physical database provisioning. These require a deployment environment and credentials. The Dockerfile is set up to execute `npm ci && npm run build` during Render build; failures should be addressed from actual Render build logs.
+
+Current scope excludes file upload storage for student assignments (written response and link sharing are implemented), AI-created free-form question banks, LLM content generation, automatic external data connectors for every campus vendor, accreditation exports, PDF slides, automatic scheduled ML retraining, and separate database per college. Those are extension points, not working features in this ZIP.
+
+See `docs/API.md` for the original endpoints and `backend/learning.py` and `backend/college_setup.py` for the newly added endpoints. Do not use fake numeric KPIs in demonstrations; if Supabase contains no observation data, the analytics correctly show missing/insufficient evidence.

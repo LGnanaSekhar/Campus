@@ -137,3 +137,43 @@ ml_models = Table('pi3_ml_models', metadata,
     Column('artifact', LargeBinary, nullable=False),
     Column('metadata', JSON, nullable=False),
     Column('trained_at', DateTime(timezone=True), nullable=False))
+
+
+# PULSEIQ Next: institution configuration and learning workflows.
+college_preferences = Table('pi3_college_preferences', metadata,
+    Column('college_id', ForeignKey('pi3_colleges.id'), primary_key=True),
+    Column('configuration', JSON, nullable=False),
+    Column('updated_at', DateTime(timezone=True), nullable=False))
+learning_tasks = Table('pi3_learning_tasks', metadata,
+    Column('id', String(36), primary_key=True),
+    Column('college_id', ForeignKey('pi3_colleges.id'), nullable=False, index=True),
+    Column('assignment_id', ForeignKey('pi3_assignments.id'), nullable=False),
+    Column('created_by', ForeignKey('pi3_accounts.id'), nullable=False),
+    Column('kind', String(20), nullable=False),
+    Column('title', String(200), nullable=False),
+    Column('description', Text, nullable=False),
+    Column('due_at', DateTime(timezone=True), nullable=False),
+    Column('max_points', Integer, nullable=False),
+    Column('questions', JSON, nullable=False),
+    Column('published', Boolean, nullable=False),
+    Column('created_at', DateTime(timezone=True), nullable=False))
+learning_submissions = Table('pi3_learning_submissions', metadata,
+    Column('id', String(36), primary_key=True),
+    Column('college_id', ForeignKey('pi3_colleges.id'), nullable=False, index=True),
+    Column('task_id', ForeignKey('pi3_learning_tasks.id'), nullable=False),
+    Column('roster_id', ForeignKey('pi3_roster.id'), nullable=False),
+    Column('answers', JSON, nullable=False),
+    Column('score', Float),
+    Column('feedback', Text, nullable=False),
+    Column('status', String(20), nullable=False),
+    Column('submitted_at', DateTime(timezone=True), nullable=False),
+    UniqueConstraint('task_id','roster_id',name='pi3_task_submission_unique'))
+learning_resources = Table('pi3_learning_resources', metadata,
+    Column('id', String(36), primary_key=True),
+    Column('college_id', ForeignKey('pi3_colleges.id'), nullable=False, index=True),
+    Column('assignment_id', ForeignKey('pi3_assignments.id'), nullable=False),
+    Column('created_by', ForeignKey('pi3_accounts.id'), nullable=False),
+    Column('title', String(200), nullable=False),
+    Column('url', String(2000), nullable=False),
+    Column('description', Text, nullable=False),
+    Column('created_at', DateTime(timezone=True), nullable=False))
