@@ -151,6 +151,8 @@ def create_app(settings=None,engine=None):
     from .learning import install_learning_routes
     install_college_routes(app,engine,settings)
     install_learning_routes(app,engine)
+    from .campus_pages import routes as install_revised_pages
+    install_revised_pages(app,engine)
 
     @app.middleware('http')
     async def security(request,call_next):
@@ -443,7 +445,7 @@ def create_app(settings=None,engine=None):
 
     @app.post('/api/entries')
     def save_entry(body:EntryData,user=Depends(identity)):
-        roles(user,'admin','faculty')
+        roles(user,'faculty')
         if body.kind not in ('marks','attendance') or body.status not in ('draft','published'):
             raise HTTPException(400,'Invalid entry kind or status.')
         if body.period_end>date.today():raise HTTPException(400,'Reporting date cannot be in the future.')
@@ -660,16 +662,26 @@ def create_app(settings=None,engine=None):
 
     @app.post('/api/timetable',status_code=201)
     def save_timetable(body:TimetableInput,user=Depends(identity)):
-        roles(user,'admin','faculty')
+        roles(user,'admin')
         if body.start_time>=body.end_time:raise HTTPException(400,'End time must be later than start time')
         with engine.begin() as c:
             subj=c.execute(select(subjects).where(subjects.c.id==body.assignment_id,subjects.c.college_id==user['college_id'])).mappings().first()
-            if not subj or (user['role']=='faculty' and subj['faculty_id']!=user['id']):raise HTTPException(403,'Not your assignment')
-            conflict=c.execute(select(tt_table.c.id).where(tt_table.c.college_id==user['college_id'],tt_table.c.assignment_id==body.assignment_id,tt_table.c.weekday==body.weekday,tt_table.c.start_time<body.end_time,tt_table.c.end_time>body.start_time)).first()
-            if conflict:raise HTTPException(409,'Overlapping class schedule')
+            if not subj:raise HTTPException(403,'Teaching assignment unavailable')
+            conflict=c.execute(select(tt_table.c.id).join(subjects,subjects.c.id==tt_table.c.assignment_id).where(tt_table.c.college_id==user['college_id'],tt_table.c.weekday==body.weekday,tt_table.c.start_time<body.end_time,tt_table.c.end_time>body.start_time,((subjects.c.faculty_id==subj['faculty_id'])|((subjects.c.department==subj['department'])&(subjects.c.semester==subj['semester'])&(subjects.c.section==subj['section']))))).first()
+            if conflict:raise HTTPException(409,'Overlapping class or faculty time slot')
             item=dict(id=uid(),college_id=user['college_id'],**body.model_dump())
             c.execute(insert(tt_table).values(**item));audit(c,user,'timetable.created',{'assignment_id':body.assignment_id})
         return item
+
+    @app.delete('/api/timetable/{slot_id}')
+    def delete_timetable(slot_id:str,user=Depends(identity)):
+        roles(user,'admin')
+        with engine.begin() as c:
+            target=c.execute(select(tt_table.c.id).where(tt_table.c.id==slot_id,tt_table.c.college_id==user['college_id'])).first()
+            if not target:raise HTTPException(404,'Timetable slot not found.')
+            c.execute(delete(tt_table).where(tt_table.c.id==slot_id,tt_table.c.college_id==user['college_id']))
+            audit(c,user,'timetable.removed',{'slot_id':slot_id})
+        return {'ok':True}
 
     @app.get('/api/ml/status')
     def model_status(user=Depends(identity)):

@@ -1,14 +1,16 @@
--- PULSEIQ Aurora: SUPABASE PostgreSQL application schema.
+-- PULSEIQ Role Pages · Supabase PostgreSQL schema
 
--- FastAPI also creates missing tables at startup. This SQL is optional.
+-- Safe to rerun on an existing PULSEIQ Supabase project. No DROP/DELETE.
 
--- Safe for new tables; existing tables are not altered/migrated.
+-- Supabase > SQL Editor > New query > paste this SQL.
+
+-- The FastAPI service also creates missing tables on startup.
+
+-- This script does not create any login passwords; use the Admin interface.
 
 
 
 BEGIN;
-
-SET LOCAL search_path TO public;
 
 CREATE TABLE IF NOT EXISTS pi3_attempts (
 	id VARCHAR(36) NOT NULL, 
@@ -16,6 +18,8 @@ CREATE TABLE IF NOT EXISTS pi3_attempts (
 	at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	PRIMARY KEY (id)
 );
+
+CREATE INDEX IF NOT EXISTS ix_pi3_attempts_identity_hash ON pi3_attempts (identity_hash);
 
 CREATE TABLE IF NOT EXISTS pi3_colleges (
 	id VARCHAR(36) NOT NULL, 
@@ -41,6 +45,8 @@ CREATE TABLE IF NOT EXISTS pi3_accounts (
 	UNIQUE (email)
 );
 
+CREATE INDEX IF NOT EXISTS ix_pi3_accounts_college_id ON pi3_accounts (college_id);
+
 CREATE TABLE IF NOT EXISTS pi3_audit (
 	id VARCHAR(36) NOT NULL, 
 	college_id VARCHAR(36) NOT NULL, 
@@ -51,6 +57,8 @@ CREATE TABLE IF NOT EXISTS pi3_audit (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id)
 );
+
+CREATE INDEX IF NOT EXISTS ix_pi3_audit_college_id ON pi3_audit (college_id);
 
 CREATE TABLE IF NOT EXISTS pi3_college_preferences (
 	college_id VARCHAR(36) NOT NULL, 
@@ -82,6 +90,8 @@ CREATE TABLE IF NOT EXISTS pi3_ml_examples (
 	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id)
 );
 
+CREATE INDEX IF NOT EXISTS ix_pi3_ml_examples_college_id ON pi3_ml_examples (college_id);
+
 CREATE TABLE IF NOT EXISTS pi3_ml_models (
 	college_id VARCHAR(36) NOT NULL, 
 	artifact BYTEA NOT NULL, 
@@ -105,6 +115,8 @@ CREATE TABLE IF NOT EXISTS pi3_roster (
 	CONSTRAINT pi3_roster_per_college UNIQUE (college_id, student_id), 
 	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id)
 );
+
+CREATE INDEX IF NOT EXISTS ix_pi3_roster_college_id ON pi3_roster (college_id);
 
 CREATE TABLE IF NOT EXISTS pi3_actions (
 	id VARCHAR(36) NOT NULL, 
@@ -138,6 +150,8 @@ CREATE TABLE IF NOT EXISTS pi3_announcements (
 	FOREIGN KEY(author_id) REFERENCES pi3_accounts (id)
 );
 
+CREATE INDEX IF NOT EXISTS ix_pi3_announcements_college_id ON pi3_announcements (college_id);
+
 CREATE TABLE IF NOT EXISTS pi3_assignments (
 	id VARCHAR(36) NOT NULL, 
 	college_id VARCHAR(36) NOT NULL, 
@@ -151,6 +165,22 @@ CREATE TABLE IF NOT EXISTS pi3_assignments (
 	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id), 
 	FOREIGN KEY(faculty_id) REFERENCES pi3_accounts (id)
 );
+
+CREATE TABLE IF NOT EXISTS pi3_faculty_presence (
+	id VARCHAR(36) NOT NULL, 
+	college_id VARCHAR(36) NOT NULL, 
+	faculty_id VARCHAR(36) NOT NULL, 
+	on_date DATE NOT NULL, 
+	present BOOLEAN NOT NULL, 
+	recorded_by VARCHAR(36) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT pi3_faculty_presence_unique UNIQUE (faculty_id, on_date), 
+	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id), 
+	FOREIGN KEY(faculty_id) REFERENCES pi3_accounts (id), 
+	FOREIGN KEY(recorded_by) REFERENCES pi3_accounts (id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_pi3_faculty_presence_college_id ON pi3_faculty_presence (college_id);
 
 CREATE TABLE IF NOT EXISTS pi3_observations (
 	id VARCHAR(36) NOT NULL, 
@@ -167,6 +197,8 @@ CREATE TABLE IF NOT EXISTS pi3_observations (
 	FOREIGN KEY(roster_id) REFERENCES pi3_roster (id)
 );
 
+CREATE INDEX IF NOT EXISTS ix_pi3_observations_college_id ON pi3_observations (college_id);
+
 CREATE TABLE IF NOT EXISTS pi3_requests (
 	id VARCHAR(36) NOT NULL, 
 	college_id VARCHAR(36) NOT NULL, 
@@ -181,6 +213,8 @@ CREATE TABLE IF NOT EXISTS pi3_requests (
 	FOREIGN KEY(roster_id) REFERENCES pi3_roster (id)
 );
 
+CREATE INDEX IF NOT EXISTS ix_pi3_requests_college_id ON pi3_requests (college_id);
+
 CREATE TABLE IF NOT EXISTS pi3_sessions (
 	token_hash VARCHAR(64) NOT NULL, 
 	user_id VARCHAR(36) NOT NULL, 
@@ -189,6 +223,54 @@ CREATE TABLE IF NOT EXISTS pi3_sessions (
 	PRIMARY KEY (token_hash), 
 	FOREIGN KEY(user_id) REFERENCES pi3_accounts (id)
 );
+
+CREATE TABLE IF NOT EXISTS pi3_student_achievements (
+	id VARCHAR(36) NOT NULL, 
+	college_id VARCHAR(36) NOT NULL, 
+	roster_id VARCHAR(36) NOT NULL, 
+	kind VARCHAR(20) NOT NULL, 
+	title VARCHAR(250) NOT NULL, 
+	description VARCHAR(1000) NOT NULL, 
+	file_name VARCHAR(255), 
+	mime_type VARCHAR(80), 
+	document BYTEA, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id), 
+	FOREIGN KEY(roster_id) REFERENCES pi3_roster (id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_pi3_student_achievements_college_id ON pi3_student_achievements (college_id);
+
+CREATE TABLE IF NOT EXISTS pi3_student_contacts (
+	roster_id VARCHAR(36) NOT NULL, 
+	college_id VARCHAR(36) NOT NULL, 
+	phone VARCHAR(30) NOT NULL, 
+	interests JSON NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	PRIMARY KEY (roster_id), 
+	FOREIGN KEY(roster_id) REFERENCES pi3_roster (id), 
+	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_pi3_student_contacts_college_id ON pi3_student_contacts (college_id);
+
+CREATE TABLE IF NOT EXISTS pi3_class_sessions (
+	id VARCHAR(36) NOT NULL, 
+	college_id VARCHAR(36) NOT NULL, 
+	assignment_id VARCHAR(36) NOT NULL, 
+	on_date DATE NOT NULL, 
+	time_slot VARCHAR(70) NOT NULL, 
+	topic VARCHAR(250) NOT NULL, 
+	created_by VARCHAR(36) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT pi3_class_session_unique UNIQUE (assignment_id, on_date, time_slot), 
+	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id), 
+	FOREIGN KEY(assignment_id) REFERENCES pi3_assignments (id), 
+	FOREIGN KEY(created_by) REFERENCES pi3_accounts (id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_pi3_class_sessions_college_id ON pi3_class_sessions (college_id);
 
 CREATE TABLE IF NOT EXISTS pi3_entries (
 	id VARCHAR(36) NOT NULL, 
@@ -211,6 +293,27 @@ CREATE TABLE IF NOT EXISTS pi3_entries (
 	FOREIGN KEY(updated_by) REFERENCES pi3_accounts (id)
 );
 
+CREATE TABLE IF NOT EXISTS pi3_exam_results (
+	id VARCHAR(36) NOT NULL, 
+	college_id VARCHAR(36) NOT NULL, 
+	assignment_id VARCHAR(36) NOT NULL, 
+	roster_id VARCHAR(36) NOT NULL, 
+	exam_name VARCHAR(100) NOT NULL, 
+	exam_date DATE NOT NULL, 
+	marks FLOAT NOT NULL, 
+	maximum FLOAT NOT NULL, 
+	entered_by VARCHAR(36) NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT pi3_exam_results_unique UNIQUE (assignment_id, roster_id, exam_name, exam_date), 
+	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id), 
+	FOREIGN KEY(assignment_id) REFERENCES pi3_assignments (id), 
+	FOREIGN KEY(roster_id) REFERENCES pi3_roster (id), 
+	FOREIGN KEY(entered_by) REFERENCES pi3_accounts (id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_pi3_exam_results_college_id ON pi3_exam_results (college_id);
+
 CREATE TABLE IF NOT EXISTS pi3_learning_resources (
 	id VARCHAR(36) NOT NULL, 
 	college_id VARCHAR(36) NOT NULL, 
@@ -225,6 +328,8 @@ CREATE TABLE IF NOT EXISTS pi3_learning_resources (
 	FOREIGN KEY(assignment_id) REFERENCES pi3_assignments (id), 
 	FOREIGN KEY(created_by) REFERENCES pi3_accounts (id)
 );
+
+CREATE INDEX IF NOT EXISTS ix_pi3_learning_resources_college_id ON pi3_learning_resources (college_id);
 
 CREATE TABLE IF NOT EXISTS pi3_learning_tasks (
 	id VARCHAR(36) NOT NULL, 
@@ -245,6 +350,8 @@ CREATE TABLE IF NOT EXISTS pi3_learning_tasks (
 	FOREIGN KEY(created_by) REFERENCES pi3_accounts (id)
 );
 
+CREATE INDEX IF NOT EXISTS ix_pi3_learning_tasks_college_id ON pi3_learning_tasks (college_id);
+
 CREATE TABLE IF NOT EXISTS pi3_timetable (
 	id VARCHAR(36) NOT NULL, 
 	college_id VARCHAR(36) NOT NULL, 
@@ -257,6 +364,26 @@ CREATE TABLE IF NOT EXISTS pi3_timetable (
 	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id), 
 	FOREIGN KEY(assignment_id) REFERENCES pi3_assignments (id)
 );
+
+CREATE INDEX IF NOT EXISTS ix_pi3_timetable_college_id ON pi3_timetable (college_id);
+
+CREATE TABLE IF NOT EXISTS pi3_class_attendance (
+	id VARCHAR(36) NOT NULL, 
+	college_id VARCHAR(36) NOT NULL, 
+	session_id VARCHAR(36) NOT NULL, 
+	roster_id VARCHAR(36) NOT NULL, 
+	present BOOLEAN NOT NULL, 
+	updated_by VARCHAR(36) NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT pi3_class_attendance_unique UNIQUE (session_id, roster_id), 
+	FOREIGN KEY(college_id) REFERENCES pi3_colleges (id), 
+	FOREIGN KEY(session_id) REFERENCES pi3_class_sessions (id), 
+	FOREIGN KEY(roster_id) REFERENCES pi3_roster (id), 
+	FOREIGN KEY(updated_by) REFERENCES pi3_accounts (id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_pi3_class_attendance_college_id ON pi3_class_attendance (college_id);
 
 CREATE TABLE IF NOT EXISTS pi3_learning_submissions (
 	id VARCHAR(36) NOT NULL, 
@@ -275,31 +402,7 @@ CREATE TABLE IF NOT EXISTS pi3_learning_submissions (
 	FOREIGN KEY(roster_id) REFERENCES pi3_roster (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_pi3_attempts_identity_hash ON pi3_attempts (identity_hash);
-
-CREATE INDEX IF NOT EXISTS ix_pi3_accounts_college_id ON pi3_accounts (college_id);
-
-CREATE INDEX IF NOT EXISTS ix_pi3_audit_college_id ON pi3_audit (college_id);
-
-CREATE INDEX IF NOT EXISTS ix_pi3_ml_examples_college_id ON pi3_ml_examples (college_id);
-
-CREATE INDEX IF NOT EXISTS ix_pi3_roster_college_id ON pi3_roster (college_id);
-
-CREATE INDEX IF NOT EXISTS ix_pi3_announcements_college_id ON pi3_announcements (college_id);
-
-CREATE INDEX IF NOT EXISTS ix_pi3_observations_college_id ON pi3_observations (college_id);
-
-CREATE INDEX IF NOT EXISTS ix_pi3_requests_college_id ON pi3_requests (college_id);
-
-CREATE INDEX IF NOT EXISTS ix_pi3_learning_resources_college_id ON pi3_learning_resources (college_id);
-
-CREATE INDEX IF NOT EXISTS ix_pi3_learning_tasks_college_id ON pi3_learning_tasks (college_id);
-
-CREATE INDEX IF NOT EXISTS ix_pi3_timetable_college_id ON pi3_timetable (college_id);
-
 CREATE INDEX IF NOT EXISTS ix_pi3_learning_submissions_college_id ON pi3_learning_submissions (college_id);
-
--- RLS protects the Data API; FastAPI uses the private Postgres connection.
 
 ALTER TABLE public.pi3_attempts ENABLE ROW LEVEL SECURITY;
 
@@ -325,13 +428,23 @@ ALTER TABLE public.pi3_announcements ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE public.pi3_assignments ENABLE ROW LEVEL SECURITY;
 
+ALTER TABLE public.pi3_faculty_presence ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.pi3_observations ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE public.pi3_requests ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE public.pi3_sessions ENABLE ROW LEVEL SECURITY;
 
+ALTER TABLE public.pi3_student_achievements ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.pi3_student_contacts ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.pi3_class_sessions ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.pi3_entries ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.pi3_exam_results ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE public.pi3_learning_resources ENABLE ROW LEVEL SECURITY;
 
@@ -339,6 +452,10 @@ ALTER TABLE public.pi3_learning_tasks ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE public.pi3_timetable ENABLE ROW LEVEL SECURITY;
 
+ALTER TABLE public.pi3_class_attendance ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.pi3_learning_submissions ENABLE ROW LEVEL SECURITY;
 
 COMMIT;
+
+-- Private backend uses the PostgreSQL owner connection; do not put DATABASE_URL in the React client.

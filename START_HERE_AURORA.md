@@ -1,100 +1,109 @@
-# PULSEIQ Aurora — React + FastAPI + Supabase
+# PULSEIQ · Admin / Faculty / Student Role Pages (October 2026)
 
-**This is the main application codebase.** The previous `kaki.html` interface is kept only under `design/` for reference; the running UI is React. UI inspiration: the approved blue/teal/purple PULSEIQ concept slides, redesigned as real components rather than static screenshots. Animated card float, halo backlight, gradient backgrounds and slow moving light-bars are implemented in CSS with reduced-motion support.
+This is the **updated deployable React + FastAPI project** that follows the requested page-by-page redesign. It is built on the previous PULSEIQ Aurora architecture and uses **one Supabase PostgreSQL instance with college-scoped data isolation**. A college registering here receives its own institution/workspace and permissions; it **does not receive a separately provisioned physical Supabase database**. Physical per-college databases require a separate provisioning service.
 
-## Start here
+## Quick deployment (Render + Supabase)
 
-**Production / Render:** deploy this entire `PULSE/` directory from the repository root with the included `Dockerfile` and `render.yaml`. The Docker build compiles React, installs FastAPI/scikit-learn dependencies, and serves both under one origin. `https://your-render-service.onrender.com/health` must return `status: ok`.
+1. Create or reuse a Supabase PostgreSQL project. Do **not** delete your current database, imported 250 student roster, or existing administrator account.
+2. In Supabase **Connect → Session pooler**, copy the entire PostgreSQL URI. It should look like:
 
-### Render environment (secrets live on Render only)
+   `postgresql://postgres.PROJECT_REFERENCE:YOUR_DB_PASSWORD@aws-0-ap-south-1.pooler.supabase.com:5432/postgres?sslmode=require`
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `DATABASE_URL` | Yes | Supabase PostgreSQL **Session pooler** URI copied from Supabase → Connect; include username `postgres.PROJECT_REF`, correct database password, `?sslmode=require` |
-| `APP_SECRET` | Yes | At least 32 random characters; Render can generate |
-| `BOOTSTRAP_COLLEGE_NAME` | For original demo bootstrap | Institution name (e.g. `Demo Engineering College`) |
-| `BOOTSTRAP_COLLEGE_DOMAIN` | For original demo bootstrap | Match `pi3_colleges.domain` (for example `democollege.edu.in`) |
-| `BOOTSTRAP_ADMIN_EMAIL` | For original demo bootstrap | Admin address from the same college domain |
-| `BOOTSTRAP_ADMIN_PASSWORD` | For original demo bootstrap | 12+ random characters |
-| `REGISTRATION_INVITE_CODE` | To allow additional colleges | Strong random platform invite secret supplied to authorized college registrants |
-| `COOKIE_SECURE` | In production | `true` |
-| `SEED_DEMO` | Optional | Recommended `false` |
-| `IMPORT_LEGACY_V2` | Optional | Recommended `false` |
+   Verify the hostname and region in your own Supabase dashboard. NEVER commit this URI to GitHub or paste the password into a public chat.
+3. Push the **contents of this PULSE folder** to the root of your GitHub repository.
+4. On Render, deploy using `render.yaml` (Docker environment) or configure a Docker Web Service with Dockerfile at repository root.
+5. In Render > Environment set these private values:
 
-You may **either** configure bootstrap admin variables to create the initial college **or**, for a completely new PostgreSQL instance, configure a registration invite code and leave all bootstrap variables unset. Do not disable `COOKIE_SECURE` on HTTPS Render deployments. Never put a database URL, an invite code, or API secrets in `frontend/`.
+   | Key | Purpose |
+   | --- | --- |
+   | `DATABASE_URL` | Full Supabase Session pooler URI. |
+   | `APP_SECRET` | Random secret at least 32 characters (Render can generate). |
+   | `BOOTSTRAP_COLLEGE_NAME` | College name for a **fresh** database. |
+   | `BOOTSTRAP_COLLEGE_DOMAIN` | E.g. `democollege.edu.in`. Must match the source college domain for importing. |
+   | `BOOTSTRAP_ADMIN_EMAIL` | Same domain as `BOOTSTRAP_COLLEGE_DOMAIN`. |
+   | `BOOTSTRAP_ADMIN_PASSWORD` | Minimum 12 characters, for **initial** bootstrap only. |
+   | `REGISTRATION_INVITE_CODE` | Private code for controlled registration of additional colleges. |
+   | `COOKIE_SECURE` | `true` for HTTPS Render. |
+   | `SEED_DEMO` | `false` (avoid overwriting demo setup with unrelated records). |
 
-**Supabase database password format**: use the exact *Session pooler* connection string from Supabase, which commonly looks like `postgresql://postgres.PROJECT_REF:ENCODED_PASSWORD@aws-0-REGION.pooler.supabase.com:5432/postgres?sslmode=require`. URL-encode special characters in your password. Do not put just `db.PROJECT_REF.supabase.co` in `DATABASE_URL`.
+   **Existing deployments:** Bootstrap environment values do not replace old Admin logins or passwords. Use the previous Admin login after redeployment.
+6. Redeploy. Check `/health`; sign in. SQLAlchemy automatically creates missing `pi3_*` tables on backend startup. For SQL management and RLS, run `database/01_application_schema.sql` from Supabase SQL Editor (does not drop tables).
+7. In **Admin → Supabase Import**, use your existing `public.students`, `public.faculty` and `public.colleges` data to create missing student/faculty login accounts. The importer requires the source college `email_domain` to match `pi3_colleges.domain`. Your existing roster is retained. Supply temporary student/faculty passwords at least 12 characters, and change them per user before real use.
+8. In **Admin → Faculty & Subjects** make sure faculty subjects/sections are assigned. These assignments control permissions, attendance, marks, and timetable access.
 
-### Run locally on Windows
+### Local development (Windows, macOS, Linux)
 
-Install Python 3.12 and Node.js 24. In PowerShell:
+Backend (Python 3.12 recommended):
 
-```powershell
-# In the PULSE folder. Replace all example values privately.
-$env:DATABASE_URL = 'postgresql://postgres.PROJECT_REF:ENCODED_PASSWORD@POOLER_HOST:5432/postgres?sslmode=require'
-$env:APP_SECRET = 'REPLACE_WITH_A_RANDOM_VALUE_LONGER_THAN_32_CHARACTERS'
-$env:BOOTSTRAP_COLLEGE_NAME = 'Demo Engineering College'
-$env:BOOTSTRAP_COLLEGE_DOMAIN = 'democollege.edu.in'
-$env:BOOTSTRAP_ADMIN_EMAIL = 'admin@democollege.edu.in'
-$env:BOOTSTRAP_ADMIN_PASSWORD = 'REPLACE_WITH_PRIVATE_LONG_RANDOM_PASSWORD'
-$env:REGISTRATION_INVITE_CODE = 'REPLACE_WITH_PRIVATE_LONG_INVITE_CODE'
-$env:COOKIE_SECURE = 'false'  # localhost only
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-connectors.txt
-.\.venv\Scripts\python.exe -m uvicorn backend.main:create_app --factory --host 127.0.0.1 --port 8000
+```bash
+python -m venv .venv
+# Activate it for your shell, then:
+pip install -r requirements-connectors.txt
+# Set DATABASE_URL and APP_SECRET in your shell / secrets manager
+python -m uvicorn backend.main:create_app --factory --host 127.0.0.1 --port 8000 --reload
 ```
 
-In a **second** terminal:
+Frontend (Node 24, or the version compatible with included Vite):
 
-```powershell
+```bash
 cd frontend
 npm ci
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`. Vite proxies `/api` to FastAPI. Or run `start_windows.bat` after setting env vars in your Command Prompt.
+Open `http://127.0.0.1:5173` (Vite proxies `/api` to `http://127.0.0.1:8000`). Production `Dockerfile` builds React and serves it from the same FastAPI origin, preserving secure cookies and CSRF behavior.
 
-## Access & workflows
+## Exact new page design
 
-| Portal | Live database functionality |
-|---|---|
-| New college | Secure invite-only self registration with own admin account; independent college domain, preferences, brand accent, academic calendar, departments, grading scheme, attendance target, request/risk toggles |
-| Admin | All-college roster, add/edit students, faculty/user account creation and password resets, enable/disable accounts, faculty class assignment, attendance and marks publishing, announcements, interventions, requests, timetable, analytics, ML training, source import, audit, learning assignments/tests, resources |
-| Faculty | Their own assigned classes, student roster, attendance and marks entry, assigned subject performance, student focus insights, interventions, create coursework/MCQ quizzes/resources, view submissions and manually grade written assignments |
-| Student | Only their own profile and student records, approved marks and attendance, published subject tasks, take auto-graded MCQ quizzes, submit written assignments, view grading feedback, resources/links, personalized focus areas, support requests |
+| Admin | Faculty | Student |
+| --- | --- | --- |
+| Dashboard — ONLY branch-wise student and faculty pie charts | My Students — roll, name, department, section, email, phone | My Profile — own record, contact and interests |
+| Student Directory — branch/section/search, add student + email/password | Student Success Insight — own students' mark rate, subjects, interests, achievements | Performance — every recorded exam; upload certificates/achievements (PDF/image <=2MB) |
+| Student Analytics — exam-mark success rate, recorded interests and achievements | Attendance — select branch/section/subject, Present/Absent radios, date, slot, topic; corrections | Risk Insights — low subjects and recorded academic backlogs (no invented predictions) |
+| Faculty & Subjects — accounts and teaching assignments | Marks Entry — direct exam marks by branch/section and assigned subject | Attendance — cumulative or date-range presence/total percentage |
+| Attendance — record faculty presence and read student attendance | Timetable — admin-published view only | Timetable — Monday through Sunday, each day configurable |
+| Timetable — add/remove faculty/subject slots; overlap prevention | Class Analytics — pass %, fail %, attendance fall %, below-threshold students | Assignments & Tests — upcoming published tasks and submissions |
+| Announcements, Supabase Import, College Preferences, My Account | Assignments & Tests, Announcements, My Account | Announcements, My Account |
 
-**Critical first-run setup for the user's existing demo**: `public.students` has 250 rows and `public.faculty` has 20, but they do NOT become login accounts automatically. The existing roster may already contain 250 rows in `pi3_roster`. Go to Admin → **Supabase Import** and provide faculty/student temporary passwords (12+ characters) to populate `pi3_accounts`. The import matches the **source college's** `public.colleges.email_domain` to the **application college's** `pi3_colleges.domain`; for this instance both should be `democollege.edu.in`. Student addresses at `@demo.edu.in` can remain unchanged. No existing passwords are overwritten. Admin must verify and add teaching assignments for department, semester, section and subject before faculty can see their students.
+Removed from role navigation: Admin Machine Learning, Teaching Assignments as a separate tab, Admin Marks & Publishing, Improvement Insights, Interventions; Faculty Dashboard, My Classes, Learning Resources, ML Risk Insights, Mentoring; Student Dashboard, old Success Insights, ML Risk Insights, Focus Areas, separate Marks/Results, Support Plans. Existing backend tables are retained **without deleting data**.
 
-Run `database/02_check_database.sql` in Supabase SQL Editor for record counts. `database/01_application_schema.sql` is an optional manual schema script; normally FastAPI creates the missing `pi3_*` tables on startup. Do **not** disable RLS to fix import visibility; FastAPI uses a direct private PostgreSQL connection. Protect the database password and do not expose `pi3_accounts` over the Supabase public Data API.
+### Business rules and data truth
 
-## IMPORTANT: college isolation vs. separate database
+- **Student attendance** is stored in `pi3_class_sessions` and `pi3_class_attendance`, uniquely keyed to the faculty's teaching assignment, date and time slot. Corrections are limited to the original faculty who entered that session. The Admin attendance page is read-only for students.
+- **Exam marks** are stored in `pi3_exam_results` for a specific subject, exam name, exam date, and maximum marks. Marks cannot exceed the maximum.
+- **Student Success Rate** is the arithmetic mean of the percentages of all recorded faculty-entered exam marks. When no marks exist, the UI shows **No data**, not 0%. Interests and uploaded achievements are displayed to aid guidance; they do not silently influence the marks score.
+- **Student Risk Insights** highlights low exam scores and displays the official `backlog_count` only if it exists in a non-synthetic academic observation. A low midterm grade does not automatically mean a backlog.
+- **Class pass percentage** is calculated over students with recorded exam marks for the selected subject, using the college's pass threshold from College Preferences. Students with no exam records are excluded, not counted as failures.
+- **Attendance below minimum** uses actual recorded class presence and the college's attendance threshold.
+- **Faculty attendance** is recorded by Admin for each faculty member and calendar date.
+- **Credentials** are server-side hashed using `pwdlib[argon2]`. Student creation is atomic: roster + contact + login together. Email must be globally unique.
+- **Files** are optional PDFs, PNGs, JPEGs, or WebP, up to 2MB. The binary data is saved in the college-scoped PostgreSQL record and served as a private attachment only to permitted users.
 
-This release is a **single hosted Supabase PostgreSQL database with per-college `college_id` isolation** across the application's 20 `pi3_*` tables. Colleges get separate institution workspaces and private data access checks. **It does not create a physical Supabase database/project for each college.** The existing External Data Sources module supports selected college-owned data connections for importing records, but application tables still live in the shared hosted database. Real database-per-tenant provisioning would require a separate database-provisioning control plane, migration orchestration, per-tenant connection lifecycle, backups, and security review before it can be advertised. For the hackathon/demo, the secure shared tenant pattern is the supported architecture.
+### Current project architecture
 
-**Self-registration is invite-only, not domain-verified:** a platform administrator controls who receives `REGISTRATION_INVITE_CODE`. Before public production registration, add email/domain ownership verification, invite expiry/rotation, moderation, rate limiting, tenant quotas, legal consent and operational monitoring. The code enforces role permissions, college ID scoping, HttpOnly session cookies, same-site CSRF, Argon2 password hashing, restricted CORS and audit logs, but those protections do not replace a security review.
+- React / TypeScript, Vite, Lucide icons and Recharts.
+- FastAPI, SQLAlchemy, PostgreSQL on Supabase; secure HttpOnly session cookies and CSRF tokens.
+- Multi-college logical tenant isolation using `college_id` and subject/roster authorization.
+- Historical traditional-ML engine preserved on the backend for future supervised learning data. **No unsupported ML risk claims appear in the simplified screens.** The new risk/interest reports are directly based on recorded marks and evidence, not unvalidated model predictions.
+- Visual system: pastel glitter gradients; glass cards; gentle glowing hover backlights, slow lift and moving accent bars; responsive and reduced-motion aware.
 
-## 7 data categories and success score
+## Testing and validation
 
-`backend/scoring.py` calculates a transparent rule-based score from **fresh observations** in these seven categories:
+Backend:
 
-- Academic: marks, backlog count (backlogs drive risk rules)
-- Attendance: attended / held class records
-- LMS: completed / assigned activities
-- Engagement: campus activities completed
-- Placement: aptitude, coding and interviews
-- Skills: technical and communication assessments
-- Feedback: help requested and contextual sentiment/support information, shown alongside scoring **but not currently included in weighted numerical score**
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -q tests/test_tenants.py tests/test_extensions.py tests/test_page_changes.py
+```
 
-**Weighted Student Success Score (6 numerical components)** from `backend/config.json`: Academic 30%, Attendance 20%, LMS 15%, Placement 25%, Skills 5%, Engagement 5%. Coverage must be at least 80% for a provisional score; absent data stays unscored. The feedback category is available as an observation and can influence contextual recommendations but is **not** part of the current score formula. The academic/placement support flags are explainable rules, not ML predictions.
+Frontend:
 
-**Traditional ML** (`backend/traditional_ml.py`) uses scikit-learn RandomForest with 7 features: marks %, attendance %, LMS %, placement %, skills %, engagement %, and backlogs. The model needs at least 40 labeled historical observations, including both outcome classes; labels must be from an actual **later** outcome to prevent leakage. An explicit synthetic demo training option is available and is never claimed as real validation. Holdout ROC-AUC, accuracy, precision, recall and feature importances are displayed. The model artifact lives in `pi3_ml_models` by college. `GET /api/insights/focus` supplies immediate evidence-based guidance using observed gaps and institution attendance preferences; it is not causal future-boost prediction.
+```bash
+cd frontend
+npm ci
+npm run build
+```
 
-## Testing and limitations
+In this sandbox, Python syntax passed, TSX was parsed, TypeScript `tsc` returned success, and **18 local backend tests passed** using SQLite. Full `npm ci` / Vite production build and a live Supabase/Render deployment could not be performed here because npm network access is unavailable. These remain **deployment verification tasks**, not completed tests.
 
-The backend automated integration smoke flow exercised **college registration, invalid invite refusal, login, preferences, add student, add faculty/student accounts, class assignment, create quiz, student quiz completion/autograde, duplicate submission blocking, resources, explainable focus API, roles, and cross-college isolation**. Tests passed with an SQLite test engine and a local *test-only* Argon2-compatible stand-in for `pwdlib` (which was missing from the execution environment). `python -m compileall -q backend` passed and TypeScript/JSX syntax parsing passed. Synthetic RandomForest training and predictions also ran successfully.
-
-**Not verified**: a complete npm production build in this offline environment, actual Render deployment, connectivity using your private Supabase credentials, browser-click end-to-end tests, simultaneous many-college load, mobile layouts on physical devices, production domain verification and per-tenant physical database provisioning. These require a deployment environment and credentials. The Dockerfile is set up to execute `npm ci && npm run build` during Render build; failures should be addressed from actual Render build logs.
-
-Current scope excludes file upload storage for student assignments (written response and link sharing are implemented), AI-created free-form question banks, LLM content generation, automatic external data connectors for every campus vendor, accreditation exports, PDF slides, automatic scheduled ML retraining, and separate database per college. Those are extension points, not working features in this ZIP.
-
-See `docs/API.md` for the original endpoints and `backend/learning.py` and `backend/college_setup.py` for the newly added endpoints. Do not use fake numeric KPIs in demonstrations; if Supabase contains no observation data, the analytics correctly show missing/insufficient evidence.
+After deployment, run `database/02_check_database.sql`, then test Admin → Faculty → Student with an actual assigned class. **Do not deploy with shared demo passwords or academic synthetic scores for real student decision-making.**
