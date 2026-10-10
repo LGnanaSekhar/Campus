@@ -97,3 +97,43 @@ logs = Table('pi3_audit', metadata,
     Column('event', String(90), nullable=False),
     Column('details', JSON, nullable=False),
     Column('at', DateTime(timezone=True), nullable=False))
+
+# Extended operational modules for the React campus platform.
+from sqlalchemy import LargeBinary, Text
+announcements = Table('pi3_announcements', metadata,
+    Column('id', String(36), primary_key=True),
+    Column('college_id', ForeignKey('pi3_colleges.id'), nullable=False, index=True),
+    Column('author_id', ForeignKey('pi3_accounts.id'), nullable=False),
+    Column('title', String(250), nullable=False),
+    Column('body', Text, nullable=False),
+    Column('audience', String(20), nullable=False),
+    Column('department', String(100)),
+    Column('created_at', DateTime(timezone=True), nullable=False))
+requests = Table('pi3_requests', metadata,
+    Column('id', String(36), primary_key=True),
+    Column('college_id', ForeignKey('pi3_colleges.id'), nullable=False, index=True),
+    Column('roster_id', ForeignKey('pi3_roster.id'), nullable=False),
+    Column('subject', String(200), nullable=False),
+    Column('detail', Text, nullable=False),
+    Column('status', String(20), nullable=False),
+    Column('reply', Text, nullable=False, default=''),
+    Column('created_at', DateTime(timezone=True), nullable=False))
+timetable = Table('pi3_timetable', metadata,
+    Column('id', String(36), primary_key=True),
+    Column('college_id', ForeignKey('pi3_colleges.id'), nullable=False, index=True),
+    Column('assignment_id', ForeignKey('pi3_assignments.id'), nullable=False),
+    Column('weekday', Integer, nullable=False),
+    Column('start_time', String(5), nullable=False),
+    Column('end_time', String(5), nullable=False),
+    Column('room', String(60), nullable=False))
+ml_examples = Table('pi3_ml_examples', metadata,
+    Column('id', String(36), primary_key=True),
+    Column('college_id', ForeignKey('pi3_colleges.id'), nullable=False, index=True),
+    Column('features', JSON, nullable=False),
+    Column('outcome', Integer, nullable=False),
+    Column('created_at', DateTime(timezone=True), nullable=False))
+ml_models = Table('pi3_ml_models', metadata,
+    Column('college_id', ForeignKey('pi3_colleges.id'), primary_key=True),
+    Column('artifact', LargeBinary, nullable=False),
+    Column('metadata', JSON, nullable=False),
+    Column('trained_at', DateTime(timezone=True), nullable=False))

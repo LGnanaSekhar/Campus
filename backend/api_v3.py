@@ -38,6 +38,10 @@ class AccountData(BaseModel):
     role:str
     departments:list[str]=Field(default_factory=list)
     student_id:str|None=None
+class SupabaseImportData(BaseModel):
+    faculty_password: str | None = Field(default=None, min_length=12, max_length=200)
+    student_password: str | None = Field(default=None, min_length=12, max_length=200)
+
 class StudentData(BaseModel):
     student_id:str=Field(min_length=1,max_length=100)
     full_name:str=Field(min_length=1,max_length=150)
@@ -268,6 +272,68 @@ def create_app(settings=None,engine=None):
             audit(c,user,'account.toggled',{'account_id':account_id,'active':not target['active']})
         return {'active':not target['active']}
 
+    @app.post('/api/admin/import-supabase')
+    def import_supabase(body:SupabaseImportData,user=Depends(identity)):
+        """Import existing public.students/faculty into the PULSEIQ tables, idempotently.
+        Accounts are optional and only created with an explicitly supplied password.
+        """
+        roles(user,'admin')
+        from sqlalchemy import inspect
+        inspector=inspect(engine)
+        available=set(inspector.get_table_names(schema='public'))
+        if not {'students','faculty','colleges'}.issubset(available):
+            raise HTTPException(400,'Missing public.students, public.faculty or public.colleges. Create demo tables first.')
+        stats={'students_created':0,'students_updated':0,'faculty_accounts_created':0,
+               'student_accounts_created':0,'assignments_created':0,'skipped_faculty':0,
+               'skipped_student_accounts':0}
+        with engine.begin() as c:
+            college=c.execute(select(colleges).where(colleges.c.id==user['college_id'])).mappings().one()
+            sources=c.execute(text('SELECT id, email_domain FROM public.colleges WHERE lower(email_domain)=:domain'),{'domain':college['domain']}).mappings().all()
+            if len(sources)!=1:
+                raise HTTPException(400,'Demo college domain does not match the PULSEIQ college domain. Check BOOTSTRAP_COLLEGE_DOMAIN and public.colleges.email_domain.')
+            source_id=sources[0]['id']
+            students=c.execute(text('SELECT roll_number, full_name, email, department, semester, section FROM public.students WHERE college_id=:cid ORDER BY roll_number'),{'cid':source_id}).mappings().all()
+            faculty=c.execute(text('SELECT * FROM public.faculty WHERE college_id=:cid ORDER BY employee_id'),{'cid':source_id}).mappings().all()
+            known={r['student_id']:r['id'] for r in c.execute(select(roster.c.student_id,roster.c.id).where(roster.c.college_id==college['id'])).mappings()}
+            existing_emails={r['email']:r for r in c.execute(select(accounts).where(accounts.c.college_id==college['id'])).mappings()}
+            linked={r['student_id'] for r in existing_emails.values() if r['role']=='student' and r['student_id']}
+            fp_hash=passwords.hash(body.faculty_password) if body.faculty_password else None
+            sp_hash=passwords.hash(body.student_password) if body.student_password else None
+            for item in students:
+                sid=str(item['roll_number']).strip()
+                values=dict(full_name=str(item['full_name'])[:150],email=str(item['email']).strip().lower() if item['email'] else None,
+                    department=str(item['department'] or 'Unassigned')[:100],semester=int(item['semester'] or 1),section=str(item['section'] or 'A')[:50],active=True)
+                if sid in known:
+                    c.execute(update(roster).where(roster.c.id==known[sid]).values(**values));stats['students_updated']+=1
+                else:
+                    c.execute(insert(roster).values(id=uid(),college_id=college['id'],student_id=sid,**values));stats['students_created']+=1
+                email=values['email']
+                if sp_hash and email and permitted_domain(email,college['domain']) and email not in existing_emails and sid not in linked:
+                    record=dict(id=uid(),college_id=college['id'],email=email,full_name=values['full_name'],password_hash=sp_hash,role='student',departments=[],student_id=sid,active=True)
+                    c.execute(insert(accounts).values(**record));existing_emails[email]=record;linked.add(sid);stats['student_accounts_created']+=1
+                elif sp_hash and sid not in linked:stats['skipped_student_accounts']+=1
+            for item in faculty:
+                email=str(item['email'] or '').strip().lower()
+                if not email or not permitted_domain(email,college['domain']):
+                    stats['skipped_faculty']+=1;continue
+                department=str(item['department'] or 'Unassigned')[:100]
+                existing=existing_emails.get(email)
+                if existing and existing['role']!='faculty':
+                    stats['skipped_faculty']+=1;continue
+                if not existing and fp_hash:
+                    record=dict(id=uid(),college_id=college['id'],email=email,full_name=str(item['full_name'])[:150],password_hash=fp_hash,role='faculty',departments=[department],student_id=None,active=True)
+                    c.execute(insert(accounts).values(**record));existing_emails[email]=record;existing=record;stats['faculty_accounts_created']+=1
+                if not existing:stats['skipped_faculty']+=1;continue
+                subject=str(item.get('subject_name') or item.get('subject_code') or '').strip()
+                semester=item.get('assigned_semester');section=item.get('assigned_section')
+                if not subject or not semester or not section:continue
+                values=dict(college_id=college['id'],faculty_id=existing['id'],department=department,semester=int(semester),section=str(section),subject=subject[:150])
+                conditions=[subjects.c[k]==v for k,v in values.items()]
+                if not c.execute(select(subjects.c.id).where(*conditions)).first():
+                    c.execute(insert(subjects).values(id=uid(),**values));stats['assignments_created']+=1
+            audit(c,user,'supabase.demo.import',stats)
+        return stats
+
     @app.post('/api/admin/students')
     def upsert_student(body:StudentData,user=Depends(identity)):
         roles(user,'admin')
@@ -454,6 +520,232 @@ def create_app(settings=None,engine=None):
         roles(user,'admin')
         with engine.connect() as c:records=c.execute(select(logs).where(logs.c.college_id==user['college_id']).order_by(logs.c.at.desc()).limit(100)).mappings().all()
         return {'items':clean([dict(r) for r in records])}
+
+    # ---- Additional operational modules: announcements, support, timetable ----
+    from .tenant_db import announcements as an_table, requests as req_table, timetable as tt_table
+    from .tenant_db import ml_examples as ml_examples_table, ml_models as ml_models_table
+    from .traditional_ml import FEATURES as ML_FEATURES, train as train_ml, predict as predict_ml
+
+    class AnnouncementInput(BaseModel):
+        title:str=Field(min_length=3,max_length=250)
+        body:str=Field(min_length=3,max_length=4000)
+        audience:str='all'
+        department:str|None=None
+    class RequestInput(BaseModel):
+        subject:str=Field(min_length=3,max_length=200)
+        detail:str=Field(min_length=3,max_length=4000)
+    class RequestReply(BaseModel):
+        status:str
+        reply:str=Field(min_length=3,max_length=4000)
+    class TimetableInput(BaseModel):
+        assignment_id:str
+        weekday:int=Field(ge=0,le=6)
+        start_time:str=Field(pattern=r'^([01]\d|2[0-3]):[0-5]\d$')
+        end_time:str=Field(pattern=r'^([01]\d|2[0-3]):[0-5]\d$')
+        room:str=Field(min_length=1,max_length=60)
+    class MLExample(BaseModel):
+        features:dict[str,float|None]
+        outcome:int=Field(ge=0,le=1)
+    class MLTrainOptions(BaseModel):
+        demo:bool=False
+
+    @app.get('/api/announcements')
+    def get_announcements(user=Depends(identity)):
+        with engine.connect() as c:
+            q=select(an_table).where(an_table.c.college_id==user['college_id'])
+            rows=c.execute(q.order_by(an_table.c.created_at.desc()).limit(200)).mappings().all()
+            departments=set(user.get('departments') or [])
+            if user['role']=='student':
+                r=authorized_student(c,user,user['student_id'])
+                departments.add(r['department'])
+        return {'items':[clean(dict(x)) for x in rows if x['audience']=='all' or user['role']=='admin' or x['audience']==user['role'] or (x['audience']=='department' and x['department'] in departments)]}
+
+    @app.post('/api/announcements',status_code=201)
+    def create_announcement(body:AnnouncementInput,user=Depends(identity)):
+        roles(user,'admin','faculty')
+        if body.audience not in ('all','student','faculty','department'):raise HTTPException(400,'Invalid audience')
+        if user['role']=='faculty' and body.audience not in ('student','department'):raise HTTPException(403,'Faculty announcements must target students or departments.')
+        if body.audience=='department' and not body.department:raise HTTPException(400,'Select a department.')
+        if user['role']=='faculty' and body.department and body.department not in user['departments']:raise HTTPException(403,'Unauthorized department.')
+        item=dict(id=uid(),college_id=user['college_id'],author_id=user['id'],**body.model_dump(),created_at=now())
+        with engine.begin() as c:c.execute(insert(an_table).values(**item));audit(c,user,'announcement.created',{'id':item['id']})
+        return clean(item)
+
+    @app.get('/api/requests')
+    def get_support_requests(user=Depends(identity)):
+        with engine.connect() as c:
+            ids=visible_ids(c,user)
+            if not ids:return {'items':[]}
+            rows=c.execute(select(req_table,roster.c.student_id,roster.c.full_name).join(roster,req_table.c.roster_id==roster.c.id).where(req_table.c.college_id==user['college_id'],req_table.c.roster_id.in_(ids)).order_by(req_table.c.created_at.desc())).mappings().all()
+        return {'items':clean([dict(x) for x in rows])}
+
+    @app.post('/api/requests',status_code=201)
+    def create_support_request(body:RequestInput,user=Depends(identity)):
+        roles(user,'student')
+        with engine.begin() as c:
+            r=authorized_student(c,user,user['student_id'])
+            item=dict(id=uid(),college_id=user['college_id'],roster_id=r['id'],**body.model_dump(),status='Open',reply='',created_at=now())
+            c.execute(insert(req_table).values(**item));audit(c,user,'request.created',{'id':item['id']})
+        return clean(item)
+
+    @app.patch('/api/requests/{request_id}')
+    def answer_support_request(request_id:str,body:RequestReply,user=Depends(identity)):
+        roles(user,'admin','faculty')
+        if body.status not in ('In progress','Resolved'):raise HTTPException(400,'Invalid status')
+        with engine.begin() as c:
+            target=c.execute(select(req_table).where(req_table.c.id==request_id,req_table.c.college_id==user['college_id'])).mappings().first()
+            if not target or target['roster_id'] not in visible_ids(c,user):raise HTTPException(404,'Request not found in your assigned classes')
+            c.execute(update(req_table).where(req_table.c.id==request_id).values(status=body.status,reply=body.reply))
+            audit(c,user,'request.answered',{'id':request_id})
+        return {'ok':True}
+
+    @app.get('/api/timetable')
+    def get_timetable(user=Depends(identity)):
+        with engine.connect() as c:
+            q=select(tt_table,subjects.c.subject,subjects.c.department,subjects.c.semester,subjects.c.section,accounts.c.full_name.label('faculty_name')).join(subjects,tt_table.c.assignment_id==subjects.c.id).join(accounts,subjects.c.faculty_id==accounts.c.id).where(tt_table.c.college_id==user['college_id'])
+            if user['role']=='faculty':q=q.where(subjects.c.faculty_id==user['id'])
+            elif user['role']=='student':
+                r=authorized_student(c,user,user['student_id'])
+                q=q.where(subjects.c.department==r['department'],subjects.c.semester==r['semester'],subjects.c.section==r['section'])
+            result=c.execute(q.order_by(tt_table.c.weekday,tt_table.c.start_time)).mappings().all()
+        return {'items':clean([dict(x) for x in result])}
+
+    @app.post('/api/timetable',status_code=201)
+    def save_timetable(body:TimetableInput,user=Depends(identity)):
+        roles(user,'admin','faculty')
+        if body.start_time>=body.end_time:raise HTTPException(400,'End time must be later than start time')
+        with engine.begin() as c:
+            subj=c.execute(select(subjects).where(subjects.c.id==body.assignment_id,subjects.c.college_id==user['college_id'])).mappings().first()
+            if not subj or (user['role']=='faculty' and subj['faculty_id']!=user['id']):raise HTTPException(403,'Not your assignment')
+            conflict=c.execute(select(tt_table.c.id).where(tt_table.c.college_id==user['college_id'],tt_table.c.assignment_id==body.assignment_id,tt_table.c.weekday==body.weekday,tt_table.c.start_time<body.end_time,tt_table.c.end_time>body.start_time)).first()
+            if conflict:raise HTTPException(409,'Overlapping class schedule')
+            item=dict(id=uid(),college_id=user['college_id'],**body.model_dump())
+            c.execute(insert(tt_table).values(**item));audit(c,user,'timetable.created',{'assignment_id':body.assignment_id})
+        return item
+
+    @app.get('/api/ml/status')
+    def model_status(user=Depends(identity)):
+        with engine.connect() as c:
+            model=c.execute(select(ml_models_table.c.metadata,ml_models_table.c.trained_at).where(ml_models_table.c.college_id==user['college_id'])).mappings().first()
+            n=c.execute(select(func.count()).where(ml_examples_table.c.college_id==user['college_id'])).scalar_one()
+        return {'trained':bool(model),'model':clean(dict(model)) if model else None,'labeled_examples':n,'required_examples':40,'features':ML_FEATURES}
+
+    @app.post('/api/admin/ml/examples',status_code=201)
+    def add_ml_example(body:MLExample,user=Depends(identity)):
+        roles(user,'admin')
+        if set(body.features)-set(ML_FEATURES):raise HTTPException(400,'Unknown feature')
+        if sum(v is not None for v in body.features.values())<2:raise HTTPException(400,'At least two observed features required')
+        for k,v in body.features.items():
+            if v is not None and not(0<=v<=(20 if k=='backlog_count' else 100)):raise HTTPException(400,'Invalid feature range')
+        with engine.begin() as c:
+            c.execute(insert(ml_examples_table).values(id=uid(),college_id=user['college_id'],features=body.features,outcome=body.outcome,created_at=now()))
+            audit(c,user,'ml.example.created',{})
+        return {'ok':True}
+
+    @app.post('/api/admin/ml/train')
+    def train_model(body:MLTrainOptions,user=Depends(identity)):
+        roles(user,'admin')
+        with engine.connect() as c:
+            examples=c.execute(select(ml_examples_table.c.features,ml_examples_table.c.outcome).where(ml_examples_table.c.college_id==user['college_id'])).mappings().all()
+        try:blob,meta=train_ml([dict(x) for x in examples],demo=body.demo)
+        except ValueError as e:raise HTTPException(400,str(e))
+        with engine.begin() as c:
+            c.execute(delete(ml_models_table).where(ml_models_table.c.college_id==user['college_id']))
+            c.execute(insert(ml_models_table).values(college_id=user['college_id'],artifact=blob,metadata=meta,trained_at=now()))
+            audit(c,user,'ml.model.trained',{'source':meta['source'],'examples':meta['total_examples']})
+        return {'trained':True,'model':meta}
+
+    @app.get('/api/ml/predictions')
+    def ml_predictions(user=Depends(identity)):
+        with engine.connect() as c:
+            model=c.execute(select(ml_models_table).where(ml_models_table.c.college_id==user['college_id'])).mappings().first()
+        if not model:return {'trained':False,'items':[]}
+        rows,_,_=academic(engine,user)
+        def flt(v):
+            if v is None:return None
+            try:
+                x=float(v)
+                return x if __import__('math').isfinite(x) else None
+            except (ValueError,TypeError):return None
+        records=[]
+        for r in rows:
+            att=flt(r.get('classes_attended'))
+            held=flt(r.get('classes_held'))
+            pct=round(att/held*100,1) if att is not None and held and held>0 else None
+            lmc=flt(r.get('assignments_completed')); lma=flt(r.get('assignments_assigned'))
+            lp=round(lmc/lma*100,1) if lmc is not None and lma and lma>0 else None
+            pl=[flt(r.get(k)) for k in ('aptitude_pct','coding_pct','interview_pct')]
+            sk=[flt(r.get(k)) for k in ('technical_pct','communication_pct')]
+            eng=flt(r.get('activities_completed'));ea=flt(r.get('activities_available'))
+            features=dict(marks_pct=flt(r.get('marks_pct')),attendance_pct=pct,lms_pct=lp,placement_pct=sum(pl)/3 if all(p is not None for p in pl) else None,skills_pct=sum(sk)/2 if all(s is not None for s in sk) else None,engagement_pct=eng/ea*100 if eng is not None and ea and ea>0 else None,backlog_count=flt(r.get('backlog_count')))
+            records.append(dict(student_id=r['student_id'],full_name=r['full_name'],features=features,observed=sum(v is not None for v in features.values())))
+        eligible=[x for x in records if x['observed']>=2]
+        p=predict_ml(model['artifact'],[x['features'] for x in eligible])
+        return {'trained':True,'model':clean(model['metadata']),'items':[{'student_id':x['student_id'],'full_name':x['full_name'],'risk_probability':q,'observed_features':x['observed']} for x,q in zip(eligible,p)],'excluded_missing_data':len(records)-len(eligible)}
+
+    class ChangePassword(BaseModel):
+        current_password:str
+        new_password:str=Field(min_length=12,max_length=200)
+    class ResetPassword(BaseModel):
+        new_password:str=Field(min_length=12,max_length=200)
+
+    @app.post('/api/auth/change-password')
+    def change_password(body:ChangePassword,request:Request,user=Depends(identity)):
+        with engine.begin() as c:
+            account=c.execute(select(accounts).where(accounts.c.id==user['id'],accounts.c.college_id==user['college_id'])).mappings().one()
+            if not passwords.verify(body.current_password,account['password_hash']):raise HTTPException(400,'Current password incorrect.')
+            if body.current_password==body.new_password:raise HTTPException(400,'Choose a different new password.')
+            c.execute(update(accounts).where(accounts.c.id==user['id']).values(password_hash=passwords.hash(body.new_password)))
+            keep=digest(request.cookies.get(COOKIE,''),settings.app_secret)
+            c.execute(delete(sessions).where(sessions.c.user_id==user['id'],sessions.c.token_hash!=keep))
+            audit(c,user,'account.password.changed',{})
+        return {'ok':True}
+
+    @app.post('/api/admin/accounts/{account_id}/reset-password')
+    def reset_account_password(account_id:str,body:ResetPassword,user=Depends(identity)):
+        roles(user,'admin')
+        with engine.begin() as c:
+            target=c.execute(select(accounts.c.id,accounts.c.email).where(accounts.c.id==account_id,accounts.c.college_id==user['college_id'])).mappings().first()
+            if not target:raise HTTPException(404,'Account not found')
+            if account_id==user['id']:raise HTTPException(400,'Use change-password for your own account')
+            c.execute(update(accounts).where(accounts.c.id==account_id).values(password_hash=passwords.hash(body.new_password)))
+            c.execute(delete(sessions).where(sessions.c.user_id==account_id))
+            audit(c,user,'account.password.reset',{'account_id':account_id})
+        return {'ok':True}
+
+    @app.patch('/api/admin/students/{student_id}/toggle')
+    def toggle_student(student_id:str,user=Depends(identity)):
+        roles(user,'admin')
+        with engine.begin() as c:
+            r=c.execute(select(roster).where(roster.c.college_id==user['college_id'],roster.c.student_id==student_id)).mappings().first()
+            if not r:raise HTTPException(404,'Student not found')
+            c.execute(update(roster).where(roster.c.id==r['id']).values(active=not r['active']))
+            audit(c,user,'roster.toggled',{'student_id':student_id,'active':not r['active']})
+        return {'ok':True,'active':not r['active']}
+
+    @app.delete('/api/admin/assignments/{assignment_id}')
+    def remove_assignment(assignment_id:str,user=Depends(identity)):
+        roles(user,'admin')
+        with engine.begin() as c:
+            item=c.execute(select(subjects).where(subjects.c.id==assignment_id,subjects.c.college_id==user['college_id'])).mappings().first()
+            if not item:raise HTTPException(404,'Assignment not found')
+            used=c.execute(select(func.count()).where(entries.c.assignment_id==assignment_id)).scalar_one()
+            if used:raise HTTPException(409,'Cannot remove an assignment with existing marks or attendance; preserve the historical record.')
+            c.execute(delete(tt_table).where(tt_table.c.assignment_id==assignment_id,tt_table.c.college_id==user['college_id']))
+            c.execute(delete(subjects).where(subjects.c.id==assignment_id))
+            audit(c,user,'faculty.assignment.removed',{'assignment_id':assignment_id})
+        return {'ok':True}
+
+    @app.patch('/api/entries/{entry_id}/publish')
+    def publish_entry(entry_id:str,user=Depends(identity)):
+        roles(user,'admin','faculty')
+        with engine.begin() as c:
+            row=c.execute(select(entries,subjects.c.faculty_id,roster.c.student_id).join(subjects,subjects.c.id==entries.c.assignment_id).join(roster,roster.c.id==entries.c.roster_id).where(entries.c.id==entry_id,entries.c.college_id==user['college_id'])).mappings().first()
+            if not row:raise HTTPException(404,'Entry not found')
+            if user['role']=='faculty' and row['faculty_id']!=user['id']:raise HTTPException(403,'Not your teaching assignment')
+            c.execute(update(entries).where(entries.c.id==entry_id).values(status='published',updated_by=user['id'],updated_at=now()))
+            audit(c,user,'academic.entry.published',{'id':entry_id,'student_id':row['student_id']})
+        return {'ok':True}
 
     dist=ROOT/'frontend'/'dist'
     if (dist/'assets').exists():app.mount('/assets',StaticFiles(directory=dist/'assets'),name='assets')

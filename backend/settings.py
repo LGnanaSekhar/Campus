@@ -36,7 +36,7 @@ class Settings:
         url = os.environ.get("DATABASE_URL", "")
         if not url:
             raise ValueError(
-                "Set DATABASE_URL to the Neon PostgreSQL connection string in Render."
+                "Set DATABASE_URL to the complete Supabase PostgreSQL Session pooler connection URI in Render."
             )
         return cls(
             url,
