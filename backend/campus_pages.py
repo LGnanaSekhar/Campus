@@ -43,7 +43,7 @@ class StudentWithLogin(BaseModel):
     student_id:str=Field(min_length=1,max_length=100)
     full_name:str=Field(min_length=1,max_length=150)
     email:str=Field(min_length=5,max_length=250)
-    password:str=Field(min_length=12,max_length=200)
+    password:str=Field(min_length=6,max_length=200)
     department:str=Field(min_length=1,max_length=100)
     semester:int=Field(ge=1,le=12)
     section:str=Field(min_length=1,max_length=50)

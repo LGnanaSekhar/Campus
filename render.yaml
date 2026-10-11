@@ -21,8 +21,6 @@ services:
         sync: false
       - key: BOOTSTRAP_ADMIN_EMAIL
         sync: false
-      - key: REGISTRATION_INVITE_CODE
-        sync: false
       - key: SEED_DEMO
         value: "false"
       - key: IMPORT_LEGACY_V2

@@ -36,13 +36,13 @@ class LoginData(BaseModel):
 class AccountData(BaseModel):
     email:str=Field(min_length=3,max_length=250)
     full_name:str=Field(min_length=1,max_length=150)
-    password:str=Field(min_length=12,max_length=200)
+    password:str=Field(min_length=6,max_length=200)
     role:str
     departments:list[str]=Field(default_factory=list)
     student_id:str|None=None
 class SupabaseImportData(BaseModel):
-    faculty_password: str | None = Field(default=None, min_length=12, max_length=200)
-    student_password: str | None = Field(default=None, min_length=12, max_length=200)
+    faculty_password: str | None = Field(default=None, min_length=6, max_length=200)
+    student_password: str | None = Field(default=None, min_length=6, max_length=200)
 
 class StudentData(BaseModel):
     student_id:str=Field(min_length=1,max_length=100)
@@ -98,15 +98,15 @@ def create_app(settings=None,engine=None):
         metadata.create_all(engine)
         with engine.begin() as c:
             if c.dialect.name=='postgresql':c.execute(text('SELECT pg_advisory_xact_lock(763928452)'))
-            college_name=os.environ.get('BOOTSTRAP_COLLEGE_NAME','Demo College' if settings.environment=='test' else '').strip()
-            admin_email=os.environ.get('BOOTSTRAP_ADMIN_EMAIL','admin@demo.edu' if settings.environment=='test' else '').strip().lower()
+            college_name=os.environ.get('BOOTSTRAP_COLLEGE_NAME','Demo College' if settings.environment=='test' and settings.admin_password else '').strip()
+            admin_email=os.environ.get('BOOTSTRAP_ADMIN_EMAIL','admin@demo.edu' if settings.environment=='test' and settings.admin_password else '').strip().lower()
             domain=os.environ.get('BOOTSTRAP_COLLEGE_DOMAIN',email_domain(admin_email)).strip().lower()
             if c.execute(select(func.count()).select_from(colleges)).scalar_one()==0:
-                if not college_name and not admin_email and os.environ.get('REGISTRATION_INVITE_CODE'):
-                    pass  # First college will register with a server-configured invite code.
+                if not college_name and not admin_email and not os.environ.get('BOOTSTRAP_COLLEGE_DOMAIN','').strip() and not settings.admin_password:
+                    pass  # Allow initial onboarding through public college registration.
                 else:
-                    if not college_name or not admin_email or not domain or not permitted_domain(admin_email,domain) or len(settings.admin_password)<12:
-                        raise RuntimeError('Set BOOTSTRAP_COLLEGE_NAME, BOOTSTRAP_COLLEGE_DOMAIN, BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD (12+ characters), or REGISTRATION_INVITE_CODE for fresh onboarding.')
+                    if not college_name or not admin_email or not domain or not permitted_domain(admin_email,domain) or len(settings.admin_password)<6:
+                        raise RuntimeError('Set BOOTSTRAP_COLLEGE_NAME, BOOTSTRAP_COLLEGE_DOMAIN, BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD (6+ characters), or leave all bootstrap values unset for self-service registration.')
                     cid=uid();c.execute(insert(colleges).values(id=cid,name=college_name,domain=domain,created_at=now()))
                     c.execute(insert(accounts).values(id=uid(),college_id=cid,email=admin_email,full_name='College Administrator',password_hash=passwords.hash(settings.admin_password),role='admin',departments=[],student_id=None,active=True))
         if os.environ.get('IMPORT_LEGACY_V2','false').lower()=='true':
@@ -755,9 +755,9 @@ def create_app(settings=None,engine=None):
 
     class ChangePassword(BaseModel):
         current_password:str
-        new_password:str=Field(min_length=12,max_length=200)
+        new_password:str=Field(min_length=6,max_length=200)
     class ResetPassword(BaseModel):
-        new_password:str=Field(min_length=12,max_length=200)
+        new_password:str=Field(min_length=6,max_length=200)
 
     @app.post('/api/auth/change-password')
     def change_password(body:ChangePassword,request:Request,user=Depends(identity)):

@@ -21,15 +21,23 @@ This is the **updated deployable React + FastAPI project** that follows the requ
    | `BOOTSTRAP_COLLEGE_NAME` | College name for a **fresh** database. |
    | `BOOTSTRAP_COLLEGE_DOMAIN` | E.g. `democollege.edu.in`. Must match the source college domain for importing. |
    | `BOOTSTRAP_ADMIN_EMAIL` | Same domain as `BOOTSTRAP_COLLEGE_DOMAIN`. |
-   | `BOOTSTRAP_ADMIN_PASSWORD` | Minimum 12 characters, for **initial** bootstrap only. |
-   | `REGISTRATION_INVITE_CODE` | Private code for controlled registration of additional colleges. |
+   | `BOOTSTRAP_ADMIN_PASSWORD` | Minimum 6 characters, for **initial** bootstrap only. |
+   | College registration | Open self-service; no invite code or environment variable needed. |
    | `COOKIE_SECURE` | `true` for HTTPS Render. |
    | `SEED_DEMO` | `false` (avoid overwriting demo setup with unrelated records). |
 
    **Existing deployments:** Bootstrap environment values do not replace old Admin logins or passwords. Use the previous Admin login after redeployment.
 6. Redeploy. Check `/health`; sign in. SQLAlchemy automatically creates missing `pi3_*` tables on backend startup. For SQL management and RLS, run `database/01_application_schema.sql` from Supabase SQL Editor (does not drop tables).
-7. In **Admin → Supabase Import**, use your existing `public.students`, `public.faculty` and `public.colleges` data to create missing student/faculty login accounts. The importer requires the source college `email_domain` to match `pi3_colleges.domain`. Your existing roster is retained. Supply temporary student/faculty passwords at least 12 characters, and change them per user before real use.
+7. In **Admin → Supabase Import**, use your existing `public.students`, `public.faculty` and `public.colleges` data to create missing student/faculty login accounts. The importer requires the source college `email_domain` to match `pi3_colleges.domain`. Your existing roster is retained. Supply temporary student/faculty passwords at least 6 characters, and change them per user before real use.
 8. In **Admin → Faculty & Subjects** make sure faculty subjects/sections are assigned. These assignments control permissions, attendance, marks, and timetable access.
+
+### College registration change (October 2026)
+
+- New colleges can register from the highlighted **Register Your College** button without an invite code.
+- The college domain must be a domain such as `college.edu.in`, not an email address. Admin email must use that domain.
+- All newly created/changed Admin, Faculty, Student and imported-account passwords require at least **6 characters**. Existing passwords remain unchanged. Six characters is a minimum, not a security recommendation: use unique, longer passwords when possible.
+- **Security note:** Public registration currently does not verify domain ownership or email access. Before opening this to real colleges, add administrator-email verification, domain-ownership checks, registration rate limiting, abuse monitoring, and institutional approval or equivalent controls. No physical Supabase database is provisioned per institution; tenant records are logically isolated in one database.
+- On a fresh instance, leave **all** `BOOTSTRAP_*` variables unset to register the first college through the public form, or supply the complete bootstrap set as before.
 
 ### Local development (Windows, macOS, Linux)
 

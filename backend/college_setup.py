@@ -5,7 +5,6 @@ college-scoped rows. It does NOT claim to provision separate Supabase projects.
 """
 import os
 import re
-import hmac
 import uuid
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -32,8 +31,7 @@ class RegisterCollege(BaseModel):
     domain:str=Field(min_length=3,max_length=150)
     admin_name:str=Field(min_length=2,max_length=150)
     admin_email:str=Field(min_length=5,max_length=250)
-    admin_password:str=Field(min_length=12,max_length=200)
-    registration_code:str=Field(min_length=1,max_length=200)
+    admin_password:str=Field(min_length=6,max_length=200)
 
 class PreferencePatch(BaseModel):
     academic_year:str=Field(default='2026-2027',min_length=4,max_length=25)
@@ -52,15 +50,12 @@ class PreferencePatch(BaseModel):
 def install_college_routes(app,engine,settings):
     @app.get('/api/colleges/registration-status')
     def registration_status():
-        return {'enabled':bool(os.environ.get('REGISTRATION_INVITE_CODE')),
-                'method':'invite_code',
+        return {'enabled':True,
+                'method':'public_college_registration',
                 'data_isolation':'college-scoped shared Supabase PostgreSQL database; not separate physical databases'}
 
     @app.post('/api/colleges/register',status_code=201)
     def register_college(body:RegisterCollege,request:Request):
-        code=os.environ.get('REGISTRATION_INVITE_CODE','')
-        if not code or not hmac.compare_digest(code,body.registration_code):
-            raise HTTPException(403,'College registration requires a valid platform invite code.')
         domain=body.domain.strip().lower()
         email=body.admin_email.strip().lower()
         if not DOMAIN.fullmatch(domain) or email.rpartition('@')[2]!=domain:

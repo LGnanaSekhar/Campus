@@ -54,7 +54,7 @@ class LoginInput(BaseModel):
 
 class UserInput(BaseModel):
     username: str = Field(pattern=r"^[a-zA-Z0-9_.-]{3,80}$")
-    password: str = Field(min_length=12, max_length=200)
+    password: str = Field(min_length=6, max_length=200)
     role: str
     departments: list[str] = Field(default_factory=list, max_length=50)
 
@@ -95,9 +95,9 @@ def create_app(settings=None, engine=None):
                 conn.execute(text("SELECT pg_advisory_xact_lock(763928451)"))
             existing = conn.execute(select(users.c.id).limit(1)).first()
             if not existing:
-                if len(settings.admin_password) < 12:
+                if len(settings.admin_password) < 6:
                     raise RuntimeError(
-                        "Set BOOTSTRAP_ADMIN_PASSWORD to at least 12 characters before first deployment."
+                        "Set BOOTSTRAP_ADMIN_PASSWORD to at least 6 characters before first deployment."
                     )
                 conn.execute(
                     insert(users).values(
