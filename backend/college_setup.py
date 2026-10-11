@@ -9,6 +9,7 @@ import hmac
 import uuid
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select, insert, update
 from sqlalchemy.exc import IntegrityError
 from .tenant_db import colleges, accounts, college_preferences, now
@@ -19,6 +20,7 @@ DOMAIN = re.compile(r'^(?=.{3,150}$)[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}$')
 
 DEFAULTS={
     'academic_year':'2026-2027', 'semester_system':'semester',
+    'timezone':'Asia/Kolkata',
     'attendance_threshold':75, 'pass_percentage':40,
     'grading_scheme':'percentage','brand_color':'#4f46e5',
     'theme':'aurora','departments':['CSE','ECE','EEE','MECH','CIVIL'],
@@ -35,6 +37,7 @@ class RegisterCollege(BaseModel):
 
 class PreferencePatch(BaseModel):
     academic_year:str=Field(default='2026-2027',min_length=4,max_length=25)
+    timezone:str=Field(default='Asia/Kolkata',min_length=1,max_length=100)
     semester_system:str=Field(default='semester')
     attendance_threshold:int=Field(default=75,ge=0,le=100)
     pass_percentage:int=Field(default=40,ge=0,le=100)
@@ -92,6 +95,8 @@ def install_college_routes(app,engine,settings):
     def save_preferences(body:PreferencePatch,user=Depends(identity)):
         roles(user,'admin')
         cfg=body.model_dump()
+        try:ZoneInfo(cfg['timezone'])
+        except (ZoneInfoNotFoundError,ValueError):raise HTTPException(400,'Select a valid IANA time zone, e.g. Asia/Kolkata.')
         if cfg['semester_system'] not in ('semester','trimester','annual'):
             raise HTTPException(400,'Unknown academic year structure.')
         if cfg['grading_scheme'] not in ('percentage','cgpa','letter'):

@@ -4,7 +4,8 @@ No fictitious success metrics: a score exists only after faculty-entered marks.
 Attendance must be recorded/edited by a faculty member assigned to that class.
 """
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from uuid import uuid4
 import base64, binascii, re
 from fastapi import Depends, HTTPException, Query
@@ -17,6 +18,23 @@ from .tenant_db import (roster, accounts, subjects, timetable, entries, colleges
     student_contacts, faculty_presence, class_sessions, class_attendance,
     exam_results, student_achievements, college_preferences, observations, now)
 from .repository import clean
+
+
+def college_local_date(c, college_id: str, at_utc: datetime | None = None) -> tuple[date, str]:
+    """Use each college's declared timezone (default India), not Render's UTC clock.
+
+    Accept an aware UTC time for deterministic boundary tests.
+    """
+    configuration = c.execute(select(college_preferences.c.configuration).where(
+        college_preferences.c.college_id == college_id)).scalar_one_or_none() or {}
+    tz = configuration.get('timezone', 'Asia/Kolkata')
+    try:
+        zone = ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, TypeError, ValueError):
+        zone = ZoneInfo('Asia/Kolkata')
+        tz = 'Asia/Kolkata'
+    instant = at_utc.astimezone(zone) if at_utc else datetime.now(zone)
+    return instant.date(), tz
 
 
 def ident():return str(uuid4())
@@ -95,7 +113,31 @@ def mark_stats(c,cid,student_ids=None,start=None,end=None):
         q=q.where(roster.c.id.in_(student_ids))
     if start:q=q.where(exam_results.c.exam_date>=start)
     if end:q=q.where(exam_results.c.exam_date<=end)
-    return [dict(z) for z in c.execute(q.order_by(exam_results.c.exam_date.desc())).mappings()]
+    records = [dict(z) for z in c.execute(q.order_by(exam_results.c.exam_date.desc())).mappings()]
+    # Older faculty Marks Entry screens persisted percentage marks in pi3_entries.
+    # Preserve those *published* assessments when no v4 exam mark for the
+    # same student/subject exists; never double-count the same subject.
+    existing = {(r['roster_id'], r['assignment_id']) for r in records}
+    legacy_q = select(entries.c.roster_id,entries.c.assignment_id,entries.c.marks_pct,
+        entries.c.period_end,roster.c.student_id,subjects.c.subject,subjects.c.department,
+        subjects.c.section,subjects.c.semester).join(roster,roster.c.id==entries.c.roster_id)\
+        .join(subjects,subjects.c.id==entries.c.assignment_id).where(
+        entries.c.college_id==cid,entries.c.kind=='marks',
+        entries.c.status=='published',entries.c.marks_pct.is_not(None))
+    if student_ids is not None:
+        legacy_q=legacy_q.where(roster.c.id.in_(student_ids))
+    if start:legacy_q=legacy_q.where(entries.c.period_end>=start)
+    if end:legacy_q=legacy_q.where(entries.c.period_end<=end)
+    for legacy in c.execute(legacy_q).mappings():
+        if (legacy['roster_id'],legacy['assignment_id']) in existing:continue
+        records.append({'roster_id':legacy['roster_id'],
+            'assignment_id':legacy['assignment_id'],
+            'student_id':legacy['student_id'],'subject':legacy['subject'],
+            'department':legacy['department'],'section':legacy['section'],
+            'semester':legacy['semester'],'marks':legacy['marks_pct'],
+            'maximum':100.0,'exam_name':'Published previous marks',
+            'exam_date':legacy['period_end'],'source':'published_legacy_marks'})
+    return records
 
 
 def attendance_stats(c,cid,student_ids=None,start=None,end=None):
@@ -121,6 +163,12 @@ def summarize(scores,pass_percentage=40):
 
 
 def routes(app,engine):
+    @app.get('/api/v4/college-date')
+    def current_college_date(user=Depends(identity)):
+        with engine.connect() as c:
+            local_day,zone=college_local_date(c,user['college_id'])
+        return {'today':local_day.isoformat(),'timezone':zone}
+
     @app.get('/api/v4/dashboard')
     def dashboard(user=Depends(identity)):
         roles(user,'admin')
@@ -199,8 +247,9 @@ def routes(app,engine):
     @app.post('/api/v4/faculty/attendance')
     def faculty_attendance(body:FacultyPresenceInput,user=Depends(identity)):
         roles(user,'admin')
-        if body.on_date>date.today():raise HTTPException(400,'Future attendance cannot be recorded.')
         with engine.begin() as c:
+            local_day,timezone_name=college_local_date(c,user['college_id'])
+            if body.on_date>local_day:raise HTTPException(400,f'Future attendance cannot be recorded. College date: {local_day} ({timezone_name}).')
             valid=c.execute(select(accounts.c.id).where(accounts.c.id==body.faculty_id,accounts.c.college_id==user['college_id'],accounts.c.role=='faculty')).first()
             if not valid:raise HTTPException(404,'Faculty member not found.')
             old=c.execute(select(faculty_presence.c.id).where(faculty_presence.c.faculty_id==body.faculty_id,faculty_presence.c.on_date==body.on_date)).scalar_one_or_none()
@@ -221,9 +270,10 @@ def routes(app,engine):
     @app.post('/api/v4/attendance/batch')
     def attendance_batch(body:AttendanceBatch,user=Depends(identity)):
         roles(user,'faculty')
-        if body.on_date>date.today():raise HTTPException(400,'Cannot take future attendance.')
         if len({i.student_id for i in body.items})!=len(body.items):raise HTTPException(400,'Duplicate student in attendance list.')
         with engine.begin() as c:
+            local_day,timezone_name=college_local_date(c,user['college_id'])
+            if body.on_date>local_day:raise HTTPException(400,f'Cannot take future attendance. College date: {local_day} ({timezone_name}).')
             a=assigned(c,user,body.assignment_id)
             members={r['student_id']:r['id'] for r in class_roster(c,a)}
             if set(i.student_id for i in body.items)!=set(members):raise HTTPException(400,'Mark every enrolled student exactly once.')
@@ -256,9 +306,10 @@ def routes(app,engine):
     @app.post('/api/v4/marks/batch')
     def marks_batch(body:MarksBatch,user=Depends(identity)):
         roles(user,'faculty')
-        if body.exam_date>date.today():raise HTTPException(400,'Cannot enter future exam marks.')
         if len({i.student_id for i in body.items})!=len(body.items):raise HTTPException(400,'Duplicate student marks.')
         with engine.begin() as c:
+            local_day,timezone_name=college_local_date(c,user['college_id'])
+            if body.exam_date>local_day:raise HTTPException(400,f'Cannot enter future exam marks. College date: {local_day} ({timezone_name}).')
             a=assigned(c,user,body.assignment_id)
             members={r['student_id']:r['id'] for r in class_roster(c,a)}
             if any(i.student_id not in members for i in body.items):raise HTTPException(400,'Student is not enrolled in the selected class.')
@@ -349,9 +400,19 @@ def routes(app,engine):
         counts=defaultdict(lambda:[0,0])
         for r in attendance:
             counts[r['student_id']][1]+=1;counts[r['student_id']][0]+=int(r['present'])
-        low=[{'student_id':r['student_id'],'full_name':r['full_name'],'attendance_pct':round(100*counts[r['student_id']][0]/counts[r['student_id']][1],1)} for r in members if counts[r['student_id']][1] and 100*counts[r['student_id']][0]/counts[r['student_id']][1]<threshold]
-        return {'class_size':len(members),'graded':len(graded),'pass_percentage':round(100*passed/len(graded),1) if graded else None,'fail_percentage':round(100*(len(graded)-passed)/len(graded),1) if graded else None,'attendance_threshold':threshold,'below_attendance':low,
-                'attendance_fall_percentage':round(100*len(low)/len([k for k,v in counts.items() if v[1]]),1) if counts else None,
+        # Do not mutate the defaultdict when checking students without attendance.
+        # Previously this added zero-session rows and caused ZeroDivisionError
+        # when a class had marks but not yet any attendance sessions.
+        low=[]
+        for student in members:
+            p=counts.get(student['student_id'])
+            if not p or p[1]==0:continue
+            attendance_pct=round(100*p[0]/p[1],1)
+            if attendance_pct<threshold:
+                low.append({'student_id':student['student_id'],'full_name':student['full_name'],'attendance_pct':attendance_pct})
+        eligible=sum(total>0 for present,total in counts.values())
+        return {'class_size':len(members),'graded':len(graded),'exam_records_count':len(marks),'marks_note':'Only entered exam results and published legacy marks are included; no estimates.','pass_percentage':round(100*passed/len(graded),1) if graded else None,'fail_percentage':round(100*(len(graded)-passed)/len(graded),1) if graded else None,'attendance_threshold':threshold,'below_attendance':low,
+                'attendance_fall_percentage':round(100*len(low)/eligible,1) if eligible else None,
                 'attendance_session_count':len({(r['on_date'],r['time_slot']) for r in attendance})}
 
     @app.post('/api/v4/achievements',status_code=201)
